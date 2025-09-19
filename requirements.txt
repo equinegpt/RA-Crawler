@@ -1,6 +1,8 @@
 fastapi==0.115.0
-uvicorn[standard]==0.30.5
+uvicorn[standard]==0.30.6
 requests==2.32.3
+SQLAlchemy==2.0.34
 selectolax==0.3.19
-SQLAlchemy==2.0.31
-pydantic==2.8.2
+lxml==5.3.0
+beautifulsoup4==4.12.3
+python-dotenv==1.0.1

@@ -1,23 +1,10 @@
 # api/main.py
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import Response
+from .races import races_router
 
-# Import the router your /races endpoints live on.
-# Most projects name it `router`. If your file exports `races_router`
-# instead, the fallback import will pick it up.
-try:
-    from .races import router as races_router
-except ImportError:
-    from .races import races_router  # fallback if exported under this name
+app = FastAPI(title="RA Program API")
 
-def auth():
-    # No-op dependency to mirror your earlier setup.
-    return True
-
-app = FastAPI(title="Racing Australia API")
-
-# (Optional) CORS for your app/ngrok/mobile tests
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -25,16 +12,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/", include_in_schema=False)
-def root():
-    return {
-        "name": "RA Crawler API",
-        "try": ["/races", "/docs", "/redoc", "/healthz"]
-    }
+@app.get("/")
+def health():
+    return {"status": "ok"}
 
-@app.get("/healthz", include_in_schema=False)
-def healthz():
-    return {"ok": True}
+app.include_router(races_router)  # exposes /races
 
-# Mount the routes
-app.include_router(races_router, dependencies=[Depends(auth)])
+# Optional local run:
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("api.main:app", host="0.0.0.0", port=8001, reload=True)
