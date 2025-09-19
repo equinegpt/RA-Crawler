@@ -1,6 +1,7 @@
 # api/main.py
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Response
 
 # Import the router your /races endpoints live on.
 # Most projects name it `router`. If your file exports `races_router`
@@ -23,6 +24,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get("/", include_in_schema=False)
+def root():
+    return {
+        "name": "RA Crawler API",
+        "try": ["/races", "/docs", "/redoc", "/healthz"]
+    }
+
+@app.get("/healthz", include_in_schema=False)
+def healthz():
+    return {"ok": True}
 
 # Mount the routes
 app.include_router(races_router, dependencies=[Depends(auth)])
