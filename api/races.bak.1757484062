@@ -1,0 +1,42 @@
+# api/races.py
+from __future__ import annotations
+
+from typing import Optional, List
+
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+from pydantic import BaseModel
+
+from .db import get_session, init_db
+from .models import RaceProgram
+
+router = APIRouter()
+
+
+class RaceItem(BaseModel):
+    id: int
+    race_no: Optional[int] = None
+    name: Optional[str] = None
+    distance_m: Optional[int] = None
+    url: str
+
+
+@router.get("/", summary="List ingested races", response_model=List[RaceItem])
+def list_races(limit: int = 50, db: Session = Depends(get_session)):
+    init_db()
+    rows = (
+        db.query(RaceProgram)
+        .order_by(RaceProgram.id.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        RaceItem(
+            id=r.id,
+            race_no=r.race_no,
+            name=r.name,
+            distance_m=r.distance_m,
+            url=r.url,
+        )
+        for r in rows
+    ]
