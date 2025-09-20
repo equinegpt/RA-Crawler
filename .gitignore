@@ -7,3 +7,7 @@ racing.db
 # sqlite dbs
 *.db
 /data/
+
+!data/racing.db
+!data/
+!data/racing.db
