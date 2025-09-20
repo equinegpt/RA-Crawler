@@ -1,23 +1,39 @@
 # api/db.py
-from __future__ import annotations
+import os
 from sqlalchemy import create_engine
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
-from .settings import settings
 
-class Base(DeclarativeBase):
-    pass
+# One path for *everything*. Change only this if you really must.
+_DEFAULT_URL = "sqlite:////Users/andrewholmes/web-crawl-db-api/data/racing.db"
+DATABASE_URL = os.getenv("DATABASE_URL", _DEFAULT_URL)
 
-engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True, future=True)
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+engine = create_engine(
+    DATABASE_URL,
+    future=True,
+    pool_pre_ping=True,
+)
 
-def get_session():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+def get_engine():
+    return engine
 
-def init_db() -> None:
-    # Import models here so they register with Base before create_all
-    from . import models  # noqa: F401
-    Base.metadata.create_all(bind=engine)
+def ensure_schema():
+    ddl = """
+    CREATE TABLE IF NOT EXISTS race_program (
+      id          INTEGER PRIMARY KEY,
+      race_no     INTEGER,
+      date        TEXT,
+      state       TEXT,
+      track       TEXT,
+      type        TEXT,
+      description TEXT,
+      prize       INTEGER,
+      condition   TEXT,
+      class       TEXT,
+      age         TEXT,
+      sex         TEXT,
+      distance_m  INTEGER,
+      bonus       TEXT,
+      url         TEXT
+    );
+    """
+    with engine.begin() as c:
+        c.exec_driver_sql(ddl)
