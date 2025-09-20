@@ -1,166 +1,100 @@
 # api/races.py
 from __future__ import annotations
 
-from datetime import date
-from typing import Optional, Dict, Any, List
+from datetime import date, timedelta, datetime
+from typing import List, Optional, Dict, Any
 
 from fastapi import APIRouter, Query
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-# Try to get your project's engine; fall back to a local maker if needed.
-try:
-    from .db import engine as _engine  # type: ignore
-except Exception:  # pragma: no cover
-    _engine = None  # type: ignore
+# We rely on your project's DB helper.
+# This must exist: api/db.py -> get_engine() -> returns SQLAlchemy Engine
+from .db import get_engine
 
-try:
-    from .db import get_engine as _get_engine  # type: ignore
-except Exception:  # pragma: no cover
-    _get_engine = None  # type: ignore
-
-races_router = APIRouter(tags=["races"])
+races_router = APIRouter()
 
 
-def _resolve_engine() -> Engine:
-    if _get_engine:
-        return _get_engine()  # type: ignore[return-value]
-    if _engine is None:
-        raise RuntimeError("Could not resolve database engine from api.db")
-    return _engine  # type: ignore[return-value]
+def _default_window() -> tuple[str, str]:
+    """Return (from_date, to_date) ISO strings for today -> today+30d."""
+    # If you want Melbourne-local ‘today’, uncomment the ZoneInfo line:
+    # from zoneinfo import ZoneInfo
+    # today = datetime.now(ZoneInfo("Australia/Melbourne")).date()
+    today = date.today()
+    return today.isoformat(), (today + timedelta(days=30)).isoformat()
 
 
-def _table_columns(conn) -> List[str]:
-    # Introspect columns from SQLite; portable enough for this case
-    cols = []
-    for row in conn.execute(text("PRAGMA table_info(race_program)")):
-        # row: (cid, name, type, notnull, dflt_value, pk)
-        cols.append(row[1])
-    return cols
-
-
-def _select_cols(conn) -> str:
-    present = set(_table_columns(conn))
-
-    # Preferred order. Only include if present in the DB.
-    ordered = [
-        "id",
-        "race_no",
-        "date",
-        "state",
-        "track",
-        "type",          # may not exist in older DBs
-        "description",
-        "prize",
-        "condition",
-        "class",
-        "age",
-        "sex",
-        "distance_m",
-        "bonus",
-        "url",
-    ]
-    cols = [c for c in ordered if c in present]
-    if not cols:
-        # safety net, but this should never happen
-        cols = ["*"]
-    return ", ".join(cols)
-
-
-@races_router.get("/races")
+@races_router.get("/races", response_model=List[Dict[str, Any]])
 def list_races(
-    # NOTE: limit=0 means "no limit"
-    limit: int = Query(0, ge=0, le=100_000),
-    offset: int = Query(0, ge=0),
-    date_from: Optional[date] = Query(None),
-    date_to: Optional[date] = Query(None),
-    state: Optional[str] = Query(None),
-    track: Optional[str] = Query(None),
-    q: Optional[str] = Query(None, description="substring match on track/description"),
-) -> List[Dict[str, Any]]:
+    state: Optional[str] = Query(None, description="Filter by state code (e.g. VIC, NSW)"),
+    track: Optional[str] = Query(None, description="Filter by track name (exact match)"),
+    type: Optional[str] = Query(None, alias="type", description="Filter by track type (M/P/C)"),
+    klass: Optional[str] = Query(None, alias="class", description="Filter by race class (e.g. BM64, G1, Listed)"),
+    from_date: Optional[str] = Query(None, description="Inclusive start date (YYYY-MM-DD)"),
+    to_date: Optional[str] = Query(None, description="Inclusive end date (YYYY-MM-DD)"),
+    q: Optional[str] = Query(None, description="Free text search over description/bonus"),
+    limit: int = Query(200, ge=1, le=1000, description="Max rows to return"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
+):
     """
-    List races from race_program.
+    Return races from `race_program` sorted by date (NULLs last), then state, track, race_no.
+    Defaults to a rolling 30-day window (today -> today+30d) unless from_date/to_date are provided.
+    """
 
-    Defaults:
-    - **No date filter** unless date_from/date_to are provided.
-    - **No limit** when limit=0 (or omitted).
+    # Default window if none supplied
+    if not from_date or not to_date:
+        d_from, d_to = _default_window()
+        from_date = from_date or d_from
+        to_date = to_date or d_to
+
+    # Build SQL with safe parameter binding
+    # NOTE: SQLite stores date as TEXT (ISO 8601) – string compare works for YYYY-MM-DD.
+    # NULLs last via CASE
+    base_sql = """
+        SELECT
+            id, race_no, date, state, track, type, description,
+            prize, condition, class, age, sex, distance_m, bonus, url
+        FROM race_program
+        WHERE 1=1
+          AND (:state     IS NULL OR state = :state)
+          AND (:track     IS NULL OR track = :track)
+          AND (:type      IS NULL OR type  = :type)
+          AND (:class     IS NULL OR class = :class)
+          AND (:from_date IS NULL OR date >= :from_date)
+          AND (:to_date   IS NULL OR date <= :to_date)
     """
-    eng = _resolve_engine()
+
+    params: Dict[str, Any] = {
+        "state": state,
+        "track": track,
+        "type": type,
+        "class": klass,
+        "from_date": from_date,
+        "to_date": to_date,
+        "limit": limit,
+        "offset": offset,
+    }
+
+    # Optional free-text query (SQLite: case-insensitive with lower())
+    # Search in description and bonus
+    if q:
+        base_sql += " AND (LOWER(description) LIKE :q OR LOWER(COALESCE(bonus,'')) LIKE :q) "
+        params["q"] = f"%{q.lower()}%"
+
+    order_sql = """
+        ORDER BY
+          CASE WHEN date IS NULL THEN 1 ELSE 0 END,
+          date ASC,
+          state ASC,
+          track ASC,
+          race_no ASC
+        LIMIT :limit OFFSET :offset
+    """
+
+    sql = base_sql + order_sql
+
+    eng: Engine = get_engine()
     with eng.connect() as conn:
-        select_cols = _select_cols(conn)
-
-        wheres = []
-        params: Dict[str, Any] = {}
-
-        if date_from:
-            wheres.append("date >= :date_from")
-            params["date_from"] = date_from.isoformat()
-        if date_to:
-            wheres.append("date <= :date_to")
-            params["date_to"] = date_to.isoformat()
-        if state:
-            wheres.append("state = :state")
-            params["state"] = state
-        if track:
-            wheres.append("track = :track")
-            params["track"] = track
-        if q:
-            wheres.append("(track LIKE :q OR description LIKE :q)")
-            params["q"] = f"%{q}%"
-
-        where_sql = f" WHERE {' AND '.join(wheres)}" if wheres else ""
-
-        sql = f"""
-            SELECT {select_cols}
-            FROM race_program
-            {where_sql}
-            ORDER BY CASE WHEN date IS NULL THEN 1 ELSE 0 END,
-                     date, state, track, race_no
-        """.strip()
-
-        if limit and limit > 0:
-            sql += " LIMIT :limit OFFSET :offset"
-            params["limit"] = limit
-            params["offset"] = offset
-
         rows = conn.execute(text(sql), params).mappings().all()
+        # Convert MappingResult rows to plain dicts
         return [dict(r) for r in rows]
-
-
-@races_router.get("/races/count")
-def count_races(
-    date_from: Optional[date] = Query(None),
-    date_to: Optional[date] = Query(None),
-    state: Optional[str] = Query(None),
-    track: Optional[str] = Query(None),
-    q: Optional[str] = Query(None),
-) -> Dict[str, int]:
-    """
-    Count races matching optional filters.
-    """
-    eng = _resolve_engine()
-    with eng.connect() as conn:
-        wheres = []
-        params: Dict[str, Any] = {}
-
-        if date_from:
-            wheres.append("date >= :date_from")
-            params["date_from"] = date_from.isoformat()
-        if date_to:
-            wheres.append("date <= :date_to")
-            params["date_to"] = date_to.isoformat()
-        if state:
-            wheres.append("state = :state")
-            params["state"] = state
-        if track:
-            wheres.append("track = :track")
-            params["track"] = track
-        if q:
-            wheres.append("(track LIKE :q OR description LIKE :q)")
-            params["q"] = f"%{q}%"
-
-        where_sql = f" WHERE {' AND '.join(wheres)}" if wheres else ""
-
-        sql = f"SELECT COUNT(*) AS n FROM race_program {where_sql}"
-        n = conn.execute(text(sql), params).scalar_one()
-        return {"count": int(n)}
