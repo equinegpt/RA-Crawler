@@ -1,100 +1,80 @@
 # api/races.py
-from __future__ import annotations
+from datetime import date, timedelta
+from typing import Optional
 
-from datetime import date, timedelta, datetime
-from typing import List, Optional, Dict, Any
-
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Depends
 from sqlalchemy import text
-from sqlalchemy.engine import Engine
-
-# We rely on your project's DB helper.
-# This must exist: api/db.py -> get_engine() -> returns SQLAlchemy Engine
 from .db import get_engine
+from .main import auth  # if you don’t use auth, you can remove the Depends(auth) below
 
-races_router = APIRouter()
+races_router = APIRouter(prefix="", tags=["races"])
 
+def _row_to_dict(row) -> dict:
+    # row is a RowMapping (thanks to .mappings().all())
+    return {
+        "id": row["id"],
+        "race_no": row["race_no"],
+        "date": row["date"],
+        "state": row["state"],
+        "track": row["track"],
+        "type": row.get("type"),
+        "description": row["description"],
+        "prize": row["prize"],
+        "condition": row["condition"],
+        "class": row.get("class"),
+        "age": row["age"],
+        "sex": row["sex"],
+        "distance_m": row.get("distance_m"),
+        "bonus": row.get("bonus"),
+        "url": row["url"],
+    }
 
-def _default_window() -> tuple[str, str]:
-    """Return (from_date, to_date) ISO strings for today -> today+30d."""
-    # If you want Melbourne-local ‘today’, uncomment the ZoneInfo line:
-    # from zoneinfo import ZoneInfo
-    # today = datetime.now(ZoneInfo("Australia/Melbourne")).date()
-    today = date.today()
-    return today.isoformat(), (today + timedelta(days=30)).isoformat()
-
-
-@races_router.get("/races", response_model=List[Dict[str, Any]])
+@races_router.get("/races", dependencies=[Depends(auth)])
 def list_races(
-    state: Optional[str] = Query(None, description="Filter by state code (e.g. VIC, NSW)"),
-    track: Optional[str] = Query(None, description="Filter by track name (exact match)"),
-    type: Optional[str] = Query(None, alias="type", description="Filter by track type (M/P/C)"),
-    klass: Optional[str] = Query(None, alias="class", description="Filter by race class (e.g. BM64, G1, Listed)"),
-    from_date: Optional[str] = Query(None, description="Inclusive start date (YYYY-MM-DD)"),
-    to_date: Optional[str] = Query(None, description="Inclusive end date (YYYY-MM-DD)"),
-    q: Optional[str] = Query(None, description="Free text search over description/bonus"),
-    limit: int = Query(200, ge=1, le=1000, description="Max rows to return"),
-    offset: int = Query(0, ge=0, description="Offset for pagination"),
+    days: int = Query(30, ge=1, le=120),   # show a full month by default
+    include_past: int = Query(0, ge=0, le=14),
+    limit: int = Query(5000, ge=1, le=20000),
+    offset: int = Query(0, ge=0),
+    state: Optional[str] = None,
+    track: Optional[str] = None,
 ):
     """
-    Return races from `race_program` sorted by date (NULLs last), then state, track, race_no.
-    Defaults to a rolling 30-day window (today -> today+30d) unless from_date/to_date are provided.
+    Returns races sorted by date (then state, track, race_no).
+    Default window: today .. today+30 days (inclusive of today, exclusive of end).
     """
+    eng = get_engine()
+    today = date.today()
+    start_date = today - timedelta(days=include_past)
+    end_date = today + timedelta(days=days)
 
-    # Default window if none supplied
-    if not from_date or not to_date:
-        d_from, d_to = _default_window()
-        from_date = from_date or d_from
-        to_date = to_date or d_to
-
-    # Build SQL with safe parameter binding
-    # NOTE: SQLite stores date as TEXT (ISO 8601) – string compare works for YYYY-MM-DD.
-    # NULLs last via CASE
-    base_sql = """
-        SELECT
-            id, race_no, date, state, track, type, description,
-            prize, condition, class, age, sex, distance_m, bonus, url
-        FROM race_program
-        WHERE 1=1
-          AND (:state     IS NULL OR state = :state)
-          AND (:track     IS NULL OR track = :track)
-          AND (:type      IS NULL OR type  = :type)
-          AND (:class     IS NULL OR class = :class)
-          AND (:from_date IS NULL OR date >= :from_date)
-          AND (:to_date   IS NULL OR date <= :to_date)
-    """
-
-    params: Dict[str, Any] = {
-        "state": state,
-        "track": track,
-        "type": type,
-        "class": klass,
-        "from_date": from_date,
-        "to_date": to_date,
+    where = ["1=1"]
+    params = {
+        "start": start_date.isoformat(),
+        "end": end_date.isoformat(),
         "limit": limit,
         "offset": offset,
     }
+    # Bound window
+    where.append("date >= :start")
+    where.append("date < :end")
+    # Optional filters
+    if state:
+        where.append("state = :state")
+        params["state"] = state
+    if track:
+        where.append("track = :track")
+        params["track"] = track
 
-    # Optional free-text query (SQLite: case-insensitive with lower())
-    # Search in description and bonus
-    if q:
-        base_sql += " AND (LOWER(description) LIKE :q OR LOWER(COALESCE(bonus,'')) LIKE :q) "
-        params["q"] = f"%{q.lower()}%"
-
-    order_sql = """
+    sql = f"""
+        SELECT id, race_no, date, state, track, type, description, prize, condition, class, age, sex, distance_m, bonus, url
+        FROM race_program
+        WHERE {" AND ".join(where)}
         ORDER BY
           CASE WHEN date IS NULL THEN 1 ELSE 0 END,
-          date ASC,
-          state ASC,
-          track ASC,
-          race_no ASC
+          date, state, track, race_no
         LIMIT :limit OFFSET :offset
     """
 
-    sql = base_sql + order_sql
-
-    eng: Engine = get_engine()
     with eng.connect() as conn:
         rows = conn.execute(text(sql), params).mappings().all()
-        # Convert MappingResult rows to plain dicts
-        return [dict(r) for r in rows]
+        return [_row_to_dict(r) for r in rows]
