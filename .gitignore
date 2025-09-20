@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 racing.db
 .env
+
+# sqlite dbs
+*.db
+/data/
