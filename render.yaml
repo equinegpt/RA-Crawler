@@ -5,10 +5,8 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: bash scripts/start.sh
     envVars:
-      - key: PYTHONUNBUFFERED
-        value: "1"
-      - key: RA_DB_VERBOSE
-        value: "1"
+      - key: DATABASE_URL
+        value: sqlite:////data/racing.db
     disk:
       name: data
       mountPath: /data
