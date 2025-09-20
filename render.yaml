@@ -3,11 +3,11 @@ services:
     name: ra-crawler
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: ./start.sh
-    plan: free
+    startCommand: bash scripts/start.sh
+    autoDeploy: true
     envVars:
-      - key: DATABASE_URL
-        value: sqlite:////data/racing.db
+      - key: PYTHONUNBUFFERED
+        value: "1"
     disk:
       name: data
       mountPath: /data
