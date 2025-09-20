@@ -2,15 +2,14 @@
 from datetime import date, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Query, Depends
+from fastapi import APIRouter, Query
 from sqlalchemy import text
+
 from .db import get_engine
-from .main import auth  # if you don’t use auth, you can remove the Depends(auth) below
 
 races_router = APIRouter(prefix="", tags=["races"])
 
 def _row_to_dict(row) -> dict:
-    # row is a RowMapping (thanks to .mappings().all())
     return {
         "id": row["id"],
         "race_no": row["race_no"],
@@ -29,9 +28,9 @@ def _row_to_dict(row) -> dict:
         "url": row["url"],
     }
 
-@races_router.get("/races", dependencies=[Depends(auth)])
+@races_router.get("/races")
 def list_races(
-    days: int = Query(30, ge=1, le=120),   # show a full month by default
+    days: int = Query(30, ge=1, le=120),
     include_past: int = Query(0, ge=0, le=14),
     limit: int = Query(5000, ge=1, le=20000),
     offset: int = Query(0, ge=0),
@@ -40,24 +39,20 @@ def list_races(
 ):
     """
     Returns races sorted by date (then state, track, race_no).
-    Default window: today .. today+30 days (inclusive of today, exclusive of end).
+    Default window: today..today+30d; can include past days via include_past.
     """
     eng = get_engine()
     today = date.today()
     start_date = today - timedelta(days=include_past)
     end_date = today + timedelta(days=days)
 
-    where = ["1=1"]
+    where = ["1=1", "date >= :start", "date < :end"]
     params = {
         "start": start_date.isoformat(),
         "end": end_date.isoformat(),
         "limit": limit,
         "offset": offset,
     }
-    # Bound window
-    where.append("date >= :start")
-    where.append("date < :end")
-    # Optional filters
     if state:
         where.append("state = :state")
         params["state"] = state
