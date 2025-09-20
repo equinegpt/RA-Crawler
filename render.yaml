@@ -1,9 +1,27 @@
+# render.yaml (append this to what you already have)
 services:
   - type: web
     name: ra-crawler
     env: python
     buildCommand: pip install -r requirements.txt
     startCommand: bash scripts/start.sh
+    envVars:
+      - key: DATABASE_URL
+        value: sqlite:////data/racing.db
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1
+
+# New: a cron job that runs once daily at 03:00 UTC
+# (That’s 1pm Melbourne during AEST, 2pm during AEDT. Our script uses AU/Melbourne for cleanup.)
+jobs:
+  - type: cron
+    name: ra-daily-crawl
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: bash scripts/daily.sh
+    schedule: "0 3 * * *"   # 03:00 UTC every day
     envVars:
       - key: DATABASE_URL
         value: sqlite:////data/racing.db
