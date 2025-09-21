@@ -3,6 +3,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .races import races_router
 
+app = FastAPI()
+app.include_router(races_router)
+
 app = FastAPI(title="RA Program API")
 
 app.add_middleware(

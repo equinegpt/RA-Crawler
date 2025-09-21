@@ -1,124 +1,81 @@
 # api/crawl_calendar.py
 from __future__ import annotations
-
 import argparse
-from typing import Any, Iterable, Tuple
+from typing import Tuple
+from sqlalchemy import text
 
 from .ra_discover import discover_meeting_keys
-
-# We try to import both names so we can fall back gracefully if needed.
-try:
-    from .ra_harvest import harvest_program  # type: ignore
-except Exception as _e:  # pragma: no cover
-    harvest_program = None  # type: ignore
-
-try:
-    from .ra_harvest import harvest_program_from_key  # type: ignore
-except Exception:
-    harvest_program_from_key = None  # type: ignore
+from .ra_harvest import harvest_program_from_key
+from .crawler import upsert_program_rows
+from .db import get_engine
 
 
-def _coerce_result(ret: Any) -> Tuple[int, int]:
+def crawl_next(
+    days: int,
+    *,
+    include_past: int = 0,
+    force: bool = False,
+    debug: bool = False,
+) -> Tuple[int, int]:
     """
-    Normalize various possible return shapes from ra_harvest into (saved, updated).
-
-    Accepted shapes:
-      - (saved, updated)
-      - (saved, updated, *extras)
-      - [rows...] -> (len(rows), 0)
-      - int -> (int, 0)
-      - None -> (0, 0)
+    Discover meeting keys for the window and harvest+upsert each meeting.
+    Returns (total_saved, total_updated).
     """
-    if ret is None:
-        return (0, 0)
+    keys = sorted(discover_meeting_keys(days=days, include_past=include_past, debug=debug))
+    print(f"[crawl] discovered {len(keys)} keys for days={days}, include_past={include_past}")
 
-    # Tuple-like (saved, updated, ...)
-    if isinstance(ret, tuple):
-        if len(ret) >= 2:
-            s, u = ret[0], ret[1]
-            try:
-                return (int(s), int(u))
-            except Exception:
-                # best effort
-                return (int(s) if isinstance(s, int) else 0, int(u) if isinstance(u, int) else 0)
-        elif len(ret) == 1:
-            s = ret[0]
-            return (int(s) if isinstance(s, int) else 0, 0)
-        else:
-            return (0, 0)
-
-    # List/iterable of rows -> count as saved
-    if isinstance(ret, list):
-        return (len(ret), 0)
-
-    # Some code paths return an integer
-    if isinstance(ret, int):
-        return (ret, 0)
-
-    # Unknown shape; ignore but don't crash
-    return (0, 0)
-
-
-def crawl_next(days: int, *, force: bool = False, include_past: int = 0, debug: bool = False) -> None:
-    keys = discover_meeting_keys(days=days, include_past=include_past, debug=debug)
-    print(f"Discovered {len(keys)} meetings for next {days} day(s).")
+    eng = get_engine()
+    try:
+        with eng.connect() as c:
+            n0 = c.execute(text("SELECT COUNT(*) FROM race_program")).scalar_one()
+            print(f"[crawl] row count BEFORE: {n0}")
+    except Exception as e:
+        print("[crawl] WARNING: could not read race_program before:", e)
 
     total_saved = 0
     total_updated = 0
-    failures = []
 
-    for k in sorted(keys):
+    for idx, key in enumerate(keys, 1):
+        print(f"\n[crawl] ({idx}/{len(keys)}) Harvesting: {key}")
         try:
-            # Primary call: many versions of ra_harvest expose harvest_program(key, force=?, debug=?)
-            ret = None
-            if callable(harvest_program):
-                try:
-                    # Try with keywords first (newer impl)
-                    ret = harvest_program(k, force=force, debug=debug)  # type: ignore[misc]
-                except TypeError:
-                    # Fallback to positional only (older impl)
-                    try:
-                        ret = harvest_program(k, force)  # type: ignore[misc]
-                    except TypeError:
-                        ret = harvest_program(k)  # type: ignore[misc]
-            # Fallback: some repos only expose harvest_program_from_key
-            if ret is None and callable(harvest_program_from_key):
-                try:
-                    ret = harvest_program_from_key(k, force=force, debug=debug)  # type: ignore[misc]
-                except TypeError:
-                    try:
-                        ret = harvest_program_from_key(k, force)  # type: ignore[misc]
-                    except TypeError:
-                        ret = harvest_program_from_key(k)  # type: ignore[misc]
-
-            s, u = _coerce_result(ret)
-            total_saved += s
-            total_updated += u
-            if debug:
-                print(f"[crawl] {k}: saved={s} updated={u}")
-
-        except KeyboardInterrupt:
-            raise
+            rows = harvest_program_from_key(key, force=force, debug=debug)
+            print(f"[crawl] parsed rows: {len(rows)}")
+            if not rows:
+                continue
+            with eng.begin() as c:
+                s, u = upsert_program_rows(c, rows)
+                print(f"[crawl] upsert saved={s} updated={u}")
+                total_saved += s
+                total_updated += u
         except Exception as e:
-            failures.append((k, f"{type(e).__name__}: {e}"))
-            if debug:
-                print(f"[crawl:ERR] {k}: {e}")
+            # One bad meeting shouldn't break the run
+            print(f"[crawl] ERROR on {key}: {e}")
 
-    print(f"TOTAL saved {total_saved}, updated {total_updated}")
-    if failures and debug:
-        print(f"[crawl] Failures ({len(failures)}):")
-        for k, msg in failures:
-            print("  -", k, "->", msg)
+    try:
+        with eng.connect() as c:
+            n1 = c.execute(text("SELECT COUNT(*) FROM race_program")).scalar_one()
+            print(f"\n[crawl] row count AFTER: {n1}  (delta saved={total_saved}, updated={total_updated})")
+    except Exception as e:
+        print("[crawl] WARNING: could not read race_program after:", e)
+
+    return total_saved, total_updated
 
 
-def _main() -> None:
-    p = argparse.ArgumentParser()
-    p.add_argument("--days", type=int, default=30)
-    p.add_argument("--include-past", type=int, default=0)
-    p.add_argument("--force", action="store_true")
-    p.add_argument("--debug", action="store_true")
-    ns = p.parse_args()
-    crawl_next(ns.days, force=ns.force, include_past=ns.include_past, debug=ns.debug)
+def _main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--days", type=int, default=30)
+    ap.add_argument("--include-past", type=int, default=2)
+    ap.add_argument("--force", action="store_true")
+    ap.add_argument("--debug", action="store_true")
+    ns = ap.parse_args()
+
+    s, u = crawl_next(
+        ns.days,
+        include_past=ns.include_past,
+        force=ns.force,
+        debug=ns.debug,
+    )
+    print(f"TOTAL saved {s}, updated {u}")
 
 
 if __name__ == "__main__":
