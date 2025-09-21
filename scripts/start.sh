@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "[start] ensuring /data exists"
-mkdir -p /data
+echo "[start] Using DATABASE_URL=${DATABASE_URL:-"(unset)"}"
 
-# Always refresh the runtime DB from the repo copy
-if [ -f /opt/render/project/src/data/racing.db ]; then
-  echo "[start] updating runtime DB from repo copy"
+# Always refresh runtime DB from the repo copy
+if [ -f "/opt/render/project/src/data/racing.db" ]; then
+  echo "[start] Seeding /data/racing.db from repo copy (force overwrite)"
+  mkdir -p /data
   cp -f /opt/render/project/src/data/racing.db /data/racing.db
-  ls -lh /data/racing.db || true
+  ls -lh /data/racing.db
 fi
 
-echo "[start] launching API"
-exec uvicorn api.main:app --host 0.0.0.0 --port "${PORT:-10000}"
+# Start the API
+exec uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-10000}
