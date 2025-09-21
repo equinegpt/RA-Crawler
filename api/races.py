@@ -1,8 +1,8 @@
 # api/races.py
 from __future__ import annotations
 
-from datetime import datetime, timedelta, date
-from zoneinfo import ZoneInfo
+from datetime import date, timedelta
+from typing import Optional, Dict, Any, List
 
 from fastapi import APIRouter, Query
 from sqlalchemy import text
@@ -12,7 +12,7 @@ from .db import get_engine
 races_router = APIRouter()
 
 
-def _row_to_dict(row: dict) -> dict:
+def _row_to_dict(row: Dict[str, Any]) -> Dict[str, Any]:
     d = dict(row)
     return {
         "id": d.get("id"),
@@ -33,81 +33,48 @@ def _row_to_dict(row: dict) -> dict:
     }
 
 
-def _today_in_tz(tz_name: str = "Australia/Melbourne") -> date:
-    try:
-        return datetime.now(ZoneInfo(tz_name)).date()
-    except Exception:
-        # Fallback to system local date if zoneinfo not available for some reason
-        return datetime.now().date()
-
-
 @races_router.get("/races")
 def list_races(
-    # Optional explicit window (if omitted we use "today -> today+29" in Melbourne time)
-    start: str | None = Query(None, description="YYYY-MM-DD (local to Australia/Melbourne by default)"),
-    end: str | None = Query(None, description="YYYY-MM-DD (inclusive)"),
-    days: int = Query(30, ge=1, le=60, description="Used only when start/end not provided"),
-    tz: str = Query("Australia/Melbourne", description="IANA timezone for 'today' defaulting"),
-    # Optional pagination if a client *wants* it; by default we do NOT limit
-    limit: int | None = Query(None, ge=1, le=20000),
-    offset: int = Query(0, ge=0),
-):
+    start: Optional[str] = Query(None, description="Start date (YYYY-MM-DD). Defaults to today."),
+    end: Optional[str] = Query(None, description="End date (YYYY-MM-DD). Defaults to today + 30 days."),
+    limit: Optional[int] = Query(None, ge=1, le=50000, description="Optional cap on rows."),
+    offset: int = Query(0, ge=0, description="Optional offset for pagination."),
+) -> List[Dict[str, Any]]:
     """
-    Returns races sorted by date ascending, then state, track, race_no.
-
-    Default window: [today (Melbourne) .. today+29] with NO row cap.
-
-    You can override with:
-      - ?start=YYYY-MM-DD&end=YYYY-MM-DD  (inclusive)
-      - or keep defaults and optionally add &limit=&offset= for paging.
+    Return race_program rows, normalized by SQLite date() so mixed YYYY-M-D formats
+    sort/filter correctly. Defaults to a rolling 30-day window starting today.
     """
-    # Resolve date window
-    if start and end:
-        start_date = start
-        end_date = end
-    elif start and not end:
-        start_date = start
-        # if only start given, honor 'days' from that start
-        sd = datetime.strptime(start, "%Y-%m-%d").date()
-        end_date = (sd + timedelta(days=days - 1)).strftime("%Y-%m-%d")
-    elif not start and end:
-        # if only end given, backfill 'days' backwards (keep simple: last N days up to end)
-        ed = datetime.strptime(end, "%Y-%m-%d").date()
-        start_date = (ed - timedelta(days=days - 1)).strftime("%Y-%m-%d")
-        end_date = end
-    else:
-        # neither provided -> use Melbourne "today" and 30-day window
-        today = _today_in_tz(tz)
-        start_date = today.strftime("%Y-%m-%d")
-        end_date = (today + timedelta(days=days - 1)).strftime("%Y-%m-%d")
+    # Defaults: today -> today + 30 days
+    if start is None:
+        start = date.today().isoformat()
+    if end is None:
+        end = (date.today() + timedelta(days=30)).isoformat()
 
-    where = ["date >= :start", "date <= :end"]
-    params: dict[str, object] = {"start": start_date, "end": end_date}
-
-    sql = f"""
+    # Build SQL with date() normalization in WHERE/ORDER to fix gaps/mis-sorts
+    sql = """
         SELECT
             id, race_no, date, state, track, type, description, prize,
             condition, class, age, sex, distance_m, bonus, url
         FROM race_program
-        WHERE {' AND '.join(where)}
+        WHERE date(date) >= date(:start)
+          AND date(date) <= date(:end)
         ORDER BY
-            CASE WHEN date IS NULL THEN 1 ELSE 0 END,
-            date, state, track, race_no
+            date(date), state, track, race_no
     """
-
-    # Only apply LIMIT/OFFSET if a limit was explicitly requested
     if limit is not None:
-        sql += "\nLIMIT :limit OFFSET :offset"
-        params["limit"] = limit
-        params["offset"] = offset
+        sql += " LIMIT :limit OFFSET :offset"
+
+    params = {"start": start, "end": end, "limit": limit if limit is not None else 0, "offset": offset}
 
     eng = get_engine()
     with eng.connect() as conn:
-        rows = conn.execute(text(sql), params).mappings().all()
+        if limit is not None:
+            rows = conn.execute(text(sql), params).mappings().all()
+        else:
+            # when no LIMIT, don't pass :limit/:offset to avoid param mismatch
+            rows = conn.execute(
+                text(sql.replace(" LIMIT :limit OFFSET :offset", "")),
+                {"start": start, "end": end},
+            ).mappings().all()
 
     return [_row_to_dict(r) for r in rows]
-
-
-@races_router.get("/")
-def healthcheck():
-    return {"status": "ok"}
