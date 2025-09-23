@@ -1,10 +1,10 @@
-# render.yaml (append this to what you already have)
 services:
   - type: web
     name: ra-crawler
     env: python
+    plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: bash scripts/start.sh
+    startCommand: python -m api.boot
     envVars:
       - key: DATABASE_URL
         value: sqlite:////data/racing.db
@@ -29,7 +29,7 @@ jobs:
       name: data
       mountPath: /data
       sizeGB: 1
-      
+
 services:
   - type: web
     name: ra-crawler
