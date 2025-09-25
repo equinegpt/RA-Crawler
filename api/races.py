@@ -11,9 +11,17 @@ from .db import get_engine
 
 races_router = APIRouter()
 
-
-def _row_to_dict(row: Dict[str, Any]) -> Dict[str, Any]:
+def _row_to_dict(row):
     d = dict(row)
+
+    # Map "No Restrictions" (and close variants) to the string "None"
+    raw_age = d.get("age")
+    age_out = d.get("age")
+    if raw_age is not None:
+        s = str(raw_age).strip().lower()
+        if s in {"no restrictions", "no restriction"}:
+            age_out = "None"
+
     return {
         "id": d.get("id"),
         "race_no": d.get("race_no"),
@@ -25,13 +33,12 @@ def _row_to_dict(row: Dict[str, Any]) -> Dict[str, Any]:
         "prize": d.get("prize"),
         "condition": d.get("condition"),
         "class": d.get("class"),
-        "age": d.get("age"),
+        "age": age_out,                 # <- "None" instead of "No Restrictions"
         "sex": d.get("sex"),
         "distance_m": d.get("distance_m"),
         "bonus": d.get("bonus"),
         "url": d.get("url"),
     }
-
 
 @races_router.get("/races")
 def list_races(
