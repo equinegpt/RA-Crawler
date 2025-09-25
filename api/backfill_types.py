@@ -1,114 +1,138 @@
 # api/backfill_types.py
+
 from __future__ import annotations
 
 import argparse
 import os
-from typing import Optional, Tuple
+import re
+import time
+from typing import Optional
 
+import requests
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Engine
 
-# Uses your track_types module (drop-in provided earlier)
-from .track_types import get_track_type
+from .track_types import infer_type
 
+REQ_TIMEOUT = 20
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; RA-Crawler/1.0; +https://example.com)",
+}
 
-def get_engine_from_url(url: Optional[str]) -> Engine:
-    if not url:
-        # default to a local sqlite file named racing.db in repo root
-        url = f"sqlite:///{os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'racing.db'))}"
+MEETING_TYPE_RE = re.compile(r"Meeting Type:\s*(Metro|Metropolitan|Provincial|Country)", re.I)
+
+def db_engine(url: Optional[str] = None):
+    url = url or os.getenv("DATABASE_URL", "sqlite:///./racing.db")
     eng = create_engine(url, future=True)
-    print(f"[backfill-types] Using DATABASE_URL: {eng.url}")
     return eng
 
+def fetch(url: str) -> str:
+    r = requests.get(url, headers=HEADERS, timeout=REQ_TIMEOUT)
+    r.raise_for_status()
+    return r.text
 
-def table_exists(eng: Engine, name: str) -> bool:
-    with eng.connect() as conn:
-        rs = conn.execute(text(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name=:n"
-        ), {"n": name}).fetchone()
-        return rs is not None
-
-
-def column_exists(eng: Engine, table: str, column: str) -> bool:
-    with eng.connect() as conn:
-        rs = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
-        cols = {r[1] for r in rs}  # (cid, name, type, notnull, dflt_value, pk)
-        return column in cols
-
-
-def backfill_types(eng: Engine, only_null: bool = True, dry_run: bool = False, chunk: int = 500) -> Tuple[int, int]:
+def parse_meeting_type_from_html(html: str) -> Optional[str]:
     """
-    Returns (scanned, updated)
+    Returns 'M' | 'P' | 'C' if a Meeting Type header is found, else None.
     """
-    if not table_exists(eng, "race_program"):
-        raise SystemExit("[backfill-types] ERROR: table 'race_program' not found.")
+    # Cheap text search (fast, robust against small markup changes)
+    m = MEETING_TYPE_RE.search(html)
+    if not m:
+        return None
+    word = m.group(1).lower()
+    if word.startswith("metro"):
+        return "M"
+    if word.startswith("prov"):
+        return "P"
+    if word.startswith("country"):
+        return "C"
+    return None
 
-    if not column_exists(eng, "race_program", "type"):
-        raise SystemExit("[backfill-types] ERROR: column 'type' not found in 'race_program'.")
+def normalize_type_letter(word: str) -> Optional[str]:
+    if not word:
+        return None
+    w = word.strip().upper()
+    if w in ("M", "METRO", "METROPOLITAN"):
+        return "M"
+    if w in ("P", "PROVINCIAL"):
+        return "P"
+    if w in ("C", "COUNTRY"):
+        return "C"
+    return None
 
-    where = "type IS NULL OR TRIM(type) = ''" if only_null else "1=1"
-
-    # Count candidates
-    with eng.connect() as conn:
-        total = conn.execute(text(f"SELECT COUNT(*) FROM race_program WHERE {where}")).scalar_one()
-    print(f"[backfill-types] Candidates to compute: {total}")
-
-    scanned = 0
+def backfill(url: Optional[str], dry_run: bool = False, limit: Optional[int] = None) -> int:
+    eng = db_engine(url)
     updated = 0
 
-    offset = 0
-    while True:
-        with eng.connect() as conn:
-            rows = conn.execute(
-                text(f"""
-                    SELECT id, state, track, type
-                    FROM race_program
-                    WHERE {where}
-                    ORDER BY id
-                    LIMIT :lim OFFSET :off
-                """),
-                {"lim": chunk, "off": offset},
-            ).fetchall()
+    # We dedupe meetings by (date,state,track) because each meeting has multiple races.
+    sel = text("""
+        SELECT date, state, track, MIN(url) as any_url
+        FROM race_program
+        WHERE type IS NULL OR TRIM(COALESCE(type,'')) = ''
+        GROUP BY date, state, track
+        ORDER BY date, state, track
+    """)
+    with eng.connect() as conn:
+        meetings = conn.execute(sel).fetchall()
 
-        if not rows:
-            break
+    if limit:
+        meetings = meetings[:limit]
 
-        to_update = []
-        for (rid, state, track, typ) in rows:
-            scanned += 1
-            new_type = get_track_type(state or "", track or "")
-            if new_type and new_type != (typ or "").strip():
-                to_update.append((rid, new_type))
+    print(f"[types] candidate meetings: {len(meetings)}")
 
-        if to_update:
-            if dry_run:
-                print(f"[backfill-types] (dry-run) would update {len(to_update)} rows in this batch")
-            else:
-                with eng.begin() as tx:
-                    tx.execute(
-                        text("UPDATE race_program SET type = :t WHERE id = :id"),
-                        [{"id": rid, "t": t} for (rid, t) in to_update],
-                    )
-                updated += len(to_update)
-                print(f"[backfill-types] Updated {len(to_update)} rows in this batch")
+    for i, (date, state, track, any_url) in enumerate(meetings, start=1):
+        # 1) Try table lookup first (fast)
+        t = infer_type(state, track)
+        # 2) If missing, try parsing the Program page heading (“Meeting Type:”)
+        if not t:
+            try:
+                html = fetch(any_url)
+                t = parse_meeting_type_from_html(html)
+            except Exception as e:
+                # network hiccup — skip gracefully
+                t = None
 
-        offset += chunk
+        if not t:
+            # Still nothing, skip
+            if i % 25 == 0:
+                print(f"[types] progress: {i}/{len(meetings)} (updated={updated})")
+            continue
 
-    return scanned, updated
+        if dry_run:
+            updated += 1
+            if i % 25 == 0:
+                print(f"[types] progress: {i}/{len(meetings)} (updated would be {updated})")
+            continue
 
+        with eng.begin() as tx:
+            # Set type for all races in the meeting
+            u = text("""
+                UPDATE race_program
+                SET type = :t
+                WHERE date = :d AND state = :s AND track = :trk
+            """)
+            tx.execute(u, {"t": t, "d": date, "s": state, "trk": track})
+        updated += 1
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description="Backfill race_program.type (M/P/C) from track/state.")
-    ap.add_argument("--url", default=os.getenv("DATABASE_URL"), help="SQLAlchemy DB URL. Defaults to $DATABASE_URL or local sqlite file.")
-    ap.add_argument("--all", action="store_true", help="Recompute type for ALL rows (not just NULL/blank).")
-    ap.add_argument("--dry-run", action="store_true", help="Do not write changes.")
-    ap.add_argument("--chunk", type=int, default=500, help="Batch size (default 500).")
+        if i % 25 == 0:
+            print(f"[types] progress: {i}/{len(meetings)} (updated={updated})")
+        # be polite to RA
+        time.sleep(0.25)
+
+    print(f"[types] updated meetings: {updated}")
+    return updated
+
+def main():
+    ap = argparse.ArgumentParser(description="Backfill race_program.type using lookup + page heading parsing.")
+    ap.add_argument("--url", help="DATABASE_URL (defaults to env DATABASE_URL or sqlite:///./racing.db)")
+    ap.add_argument("--dry-run", action="store_true", help="Do not write; just report.")
+    ap.add_argument("--limit", type=int, help="Only process this many meetings.")
     args = ap.parse_args()
 
-    eng = get_engine_from_url(args.url)
-    scanned, updated = backfill_types(eng, only_null=not args.all, dry_run=args.dry_run, chunk=args.chunk)
-    print(f"[backfill-types] Done. Scanned={scanned}, Updated={updated}, only_null={not args.all}, dry_run={args.dry_run}")
-
+    n = backfill(args.url, dry_run=args.dry_run, limit=args.limit)
+    if args.dry_run:
+        print(f"[types] (dry-run) would update {n} meetings.")
+    else:
+        print(f"[types] done: updated {n} meetings.")
 
 if __name__ == "__main__":
     main()

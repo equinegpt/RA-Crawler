@@ -1,9 +1,8 @@
 # api/track_types.py
-# M = Metro, P = Provincial, C = Country
-# All matching case-insensitive; we canonicalize to UPPER for keys.
 
-from typing import Tuple
+from __future__ import annotations
 
+# -------- Aliases -> Canonical track name (UPPERCASE) ----------
 _ALIAS_EQUIV = {
     # VIC
     ("VIC", "SANDOWN"): "SANDOWN",
@@ -12,8 +11,6 @@ _ALIAS_EQUIV = {
     ("VIC", "WERRIBEE PARK"): "WERRIBEE",
     ("VIC", "CRANBOURNE TRN"): "CRANBOURNE",
     ("VIC", "SOUTHSIDE CRANBOURNE"): "CRANBOURNE",
-    ("VIC", "SPORTSBET-BALLARAT"): "BALLARAT",
-    ("VIC", "PICKLEBET PARK WODONGA"): "WODONGA",
 
     # NSW
     ("NSW", "RANDWICK KENSINGTON"): "KENSINGTON",
@@ -34,6 +31,12 @@ _ALIAS_EQUIV = {
     ("SA", "MURRAY BRIDGE PARK"): "MURRAY BRIDGE",
 }
 
+def canonical_track(state: str, track: str) -> str:
+    s = (state or "").strip().upper()
+    t = (track or "").strip().upper()
+    return _ALIAS_EQUIV.get((s, t), t)
+
+# -------- Grade table (STATE, TRACK) -> "M" | "P" | "C" ----------
 TRACK_GRADE = {
     # ACT
     ("ACT", "CANBERRA"): "P",
@@ -50,7 +53,7 @@ TRACK_GRADE = {
     ("NSW", "KEMBLA GRANGE"): "P",
     ("NSW", "NEWCASTLE"): "P",
     ("NSW", "WYONG"): "P",
-    # NSW — common country
+    # NSW — country (examples)
     ("NSW", "NOWRA"): "C",
     ("NSW", "COFFS HARBOUR"): "C",
     ("NSW", "MUSWELLBROOK"): "C",
@@ -58,6 +61,7 @@ TRACK_GRADE = {
     ("NSW", "TAREE"): "C",
     ("NSW", "SCONE"): "C",
     ("NSW", "GRAFTON"): "C",
+    ("NSW", "TAMWORTH"): "C",
 
     # VIC — metro
     ("VIC", "FLEMINGTON"): "M",
@@ -82,7 +86,7 @@ TRACK_GRADE = {
     ("VIC", "WERRIBEE"): "P",
     ("VIC", "YARRA GLEN"): "P",
     ("VIC", "TRARALGON"): "P",
-    # VIC — country examples
+    # VIC — country (examples)
     ("VIC", "WANGARATTA"): "C",
     ("VIC", "WODONGA"): "C",
     ("VIC", "SWAN HILL"): "C",
@@ -98,7 +102,7 @@ TRACK_GRADE = {
     ("QLD", "IPSWICH"): "P",
     ("QLD", "TOOWOOMBA"): "P",
     ("QLD", "GOLD COAST"): "P",
-    # QLD — country
+    # QLD — country (examples)
     ("QLD", "TOWNSVILLE"): "C",
     ("QLD", "ROCKHAMPTON"): "C",
     ("QLD", "MACKAY"): "C",
@@ -107,6 +111,7 @@ TRACK_GRADE = {
 
     # SA
     ("SA", "MORPHETTVILLE"): "M",
+    ("SA", "MORPHETTVILLE PARKS"): "M",
     ("SA", "BALAKLAVA"): "P",
     ("SA", "GAWLER"): "P",
     ("SA", "MURRAY BRIDGE"): "P",
@@ -139,17 +144,7 @@ TRACK_GRADE = {
     ("NT", "KATHERINE"): "C",
 }
 
-def _canon(s: str) -> str:
-    return (s or "").strip().upper()
-
-def canonicalize_track(state: str, track: str) -> Tuple[str, str]:
-    st = _canon(state)
-    tr = _canon(track)
-    alt = _ALIAS_EQUIV.get((st, tr))
-    if alt:
-        tr = alt
-    return st, tr
-
-def get_track_type(state: str, track: str) -> str:
-    st, tr = canonicalize_track(state, track)
-    return TRACK_GRADE.get((st, tr)) or ""
+def infer_type(state: str, track: str) -> str | None:
+    s = (state or "").strip().upper()
+    t = canonical_track(s, track)
+    return TRACK_GRADE.get((s, t))
