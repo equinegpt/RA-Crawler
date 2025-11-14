@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS race_program (
     date        TEXT,
     state       TEXT,
     track       TEXT,
+    meeting_id  TEXT,
     type        TEXT,
     description TEXT,
     prize       INTEGER,
@@ -127,6 +128,7 @@ def _clean_str(v: Any) -> Optional[str]:
 UPDATE_SQL = text("""
     UPDATE race_program
     SET
+        meeting_id  = :meeting_id,
         type        = :type,
         description = :description,
         prize       = :prize,
@@ -145,10 +147,10 @@ UPDATE_SQL = text("""
 
 INSERT_SQL = text("""
     INSERT INTO race_program (
-        race_no, date, state, track, type, description, prize,
+        race_no, date, state, track, meeting_id, type, description, prize,
         condition, class, age, sex, distance_m, bonus, url
     ) VALUES (
-        :race_no, :date, :state, :track, :type, :description, :prize,
+        :race_no, :date, :state, :track, :meeting_id, :type, :description, :prize,
         :condition, :class, :age, :sex, :distance_m, :bonus, :url
     )
 """)
@@ -159,6 +161,7 @@ def _prep_params(r: Dict[str, Any]) -> Dict[str, Any]:
         "date":       _norm_date(r.get("date")),
         "state":      (_clean_str(r.get("state")) or ""),
         "track":      (_clean_str(r.get("track")) or ""),
+        "meeting_id": _clean_str(r.get("meeting_id")),   # ← new
         "type":       _clean_str(r.get("type")),
         "description":(_clean_str(r.get("description")) or ""),
         "prize":      _coerce_int(r.get("prize")),
@@ -170,6 +173,40 @@ def _prep_params(r: Dict[str, Any]) -> Dict[str, Any]:
         "bonus":      _clean_str(r.get("bonus")),
         "url":        (_clean_str(r.get("url")) or ""),
     }
+
+def _ensure_meeting_id_column(conn) -> None:
+    """Add meeting_id column if missing (for existing SQLite DBs)."""
+    try:
+        rows = conn.exec_driver_sql("PRAGMA table_info(race_program)").fetchall()
+        col_names = {r[1] for r in rows}
+        if "meeting_id" not in col_names:
+            conn.exec_driver_sql("ALTER TABLE race_program ADD COLUMN meeting_id TEXT")
+            if RA_DB_VERBOSE:
+                print("[crawler] Added meeting_id column to race_program")
+    except Exception as e:
+        if RA_DB_VERBOSE:
+            print(f"[crawler] WARNING: could not ensure meeting_id column: {e}")
+
+def _ensure_schema_via_engine(eng: Engine) -> None:
+    with eng.begin() as conn:
+        conn.exec_driver_sql(CREATE_TABLE_SQL)
+        conn.exec_driver_sql(CREATE_UNIQUE_INDEX_SQL)
+        _ensure_meeting_id_column(conn)
+
+def _ensure_schema_via_connection(conn: Connection) -> None:
+    manage_tx = not conn.in_transaction()
+    if manage_tx:
+        tx = conn.begin()
+    try:
+        conn.exec_driver_sql(CREATE_TABLE_SQL)
+        conn.exec_driver_sql(CREATE_UNIQUE_INDEX_SQL)
+        _ensure_meeting_id_column(conn)
+        if manage_tx:
+            tx.commit()
+    except Exception:
+        if manage_tx:
+            tx.rollback()
+        raise
 
 # ---------------------- Public entrypoint ---------------------
 

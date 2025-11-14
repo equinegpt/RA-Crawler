@@ -30,10 +30,55 @@ def db_engine(url: Optional[str] = None):
 
 
 def _norm_track_name(name: str) -> str:
-    # Normalise spacing/case to make matching robust
-    s = re.sub(r"\s+", " ", (name or "").strip())
-    return s.upper()
+    """
+    Normalise track names so sponsor fluff and generic suffixes don't break matching.
 
+    Examples:
+      "Southside Pakenham"      -> "PAKENHAM"
+      "Ladbrokes Geelong"       -> "GEELONG"
+      "Canterbury Park"         -> "CANTERBURY"
+      "Aquis Park Gold Coast"   -> "GOLD COAST"
+      "Randwick"                -> "RANDWICK"
+    """
+    if not name:
+        return ""
+
+    # Normalise whitespace and punctuation
+    s = re.sub(r"[^\w\s-]", " ", str(name))   # drop weird punctuation but keep hyphens
+    s = re.sub(r"[\s\-]+", " ", s).strip()    # collapse spaces/hyphens
+
+    tokens = [t for t in s.upper().split(" ") if t]
+
+    # Common sponsor / branding tokens we can safely drop
+    SPONSOR_TOKENS = {
+        "LADBROKES",
+        "SPORTSBET",
+        "SOUTHSIDE",
+        "AQUIS",
+        "NEDS",
+        "TAB",
+        "TABCOMAU",
+        "XXXX",
+        "CARLTON",
+        "DRAUGHT",
+    }
+
+    # Generic course words that can be dropped when other tokens remain
+    GENERIC_TOKENS = {
+        "RACECOURSE",
+        "RACETRACK",
+        "RACEWAY",
+        "RACES",
+    }
+
+    # 1) Strip sponsor branding tokens
+    tokens = [t for t in tokens if t not in SPONSOR_TOKENS]
+
+    # 2) If there are multiple tokens, drop generic course words + PARK
+    if len(tokens) > 1:
+        tokens = [t for t in tokens if t not in GENERIC_TOKENS and t != "PARK"]
+
+    return " ".join(tokens)
 
 def _fetch_meetings_for_date(date_iso: str) -> List[Dict]:
     """
@@ -130,12 +175,43 @@ def backfill(
             continue
 
         # Update all matching meetings for this date
+        # Update all matching meetings for this date
         with eng.begin() as tx:
             for state, track in mts:
-                key = (str(state).upper(), _norm_track_name(track))
+                state_up = str(state).upper()
+                ra_norm = _norm_track_name(track)
+                key = (state_up, ra_norm)
                 mid = pf_map.get(key)
+
+                # Fuzzy fallback if no exact (state, norm_name) match
                 if not mid:
-                    # No match found for this (date,state,track); skip quietly
+                    ra_tokens = set(ra_norm.split())
+                    best_mid = None
+                    best_score = 0
+                    ambiguous = False
+
+                    for (pf_state, pf_name_norm), cand_mid in pf_map.items():
+                        if pf_state != state_up:
+                            continue
+                        pf_tokens = set(pf_name_norm.split())
+                        inter = ra_tokens & pf_tokens
+                        score = len(inter)
+                        if score == 0:
+                            continue
+
+                        if score > best_score:
+                            best_score = score
+                            best_mid = cand_mid
+                            ambiguous = False
+                        elif score == best_score and score > 0:
+                            # Another PF meeting with the same overlap → ambiguous
+                            ambiguous = True
+
+                    if best_score > 0 and not ambiguous:
+                        mid = best_mid
+
+                if not mid:
+                    # No reliable match found; leave meeting_id NULL for this meeting
                     continue
 
                 if dry_run:

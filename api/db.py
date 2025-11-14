@@ -23,6 +23,7 @@ def ensure_schema():
       date        TEXT,
       state       TEXT,
       track       TEXT,
+      meeting_id  TEXT,
       type        TEXT,
       description TEXT,
       prize       INTEGER,
@@ -37,3 +38,8 @@ def ensure_schema():
     """
     with engine.begin() as c:
         c.exec_driver_sql(ddl)
+        # For existing DBs, ensure meeting_id column exists
+        rows = c.exec_driver_sql("PRAGMA table_info(race_program)").fetchall()
+        col_names = {r[1] for r in rows}
+        if "meeting_id" not in col_names:
+            c.exec_driver_sql("ALTER TABLE race_program ADD COLUMN meeting_id TEXT")

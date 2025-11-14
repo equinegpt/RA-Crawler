@@ -2,7 +2,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .races import races_router
+from .db import ensure_schema
 
+ensure_schema()
 app = FastAPI()
 app.include_router(races_router)
 
