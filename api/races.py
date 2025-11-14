@@ -1,4 +1,3 @@
-# api/races.py
 from __future__ import annotations
 
 from datetime import date, timedelta
@@ -10,6 +9,7 @@ from sqlalchemy import text
 from .db import get_engine
 
 races_router = APIRouter()
+
 
 def _row_to_dict(row):
     d = dict(row)
@@ -27,18 +27,20 @@ def _row_to_dict(row):
         "race_no": d.get("race_no"),
         "date": d.get("date"),
         "state": d.get("state"),
+        "meetingId": d.get("meeting_id"),   # ← NEW FIELD
         "track": d.get("track"),
         "type": d.get("type"),
         "description": d.get("description"),
         "prize": d.get("prize"),
         "condition": d.get("condition"),
         "class": d.get("class"),
-        "age": age_out,                 # <- "None" instead of "No Restrictions"
+        "age": age_out,                     # "None" instead of "No Restrictions"
         "sex": d.get("sex"),
         "distance_m": d.get("distance_m"),
         "bonus": d.get("bonus"),
         "url": d.get("url"),
     }
+
 
 @races_router.get("/races")
 def list_races(
@@ -60,7 +62,7 @@ def list_races(
     # Build SQL with date() normalization in WHERE/ORDER to fix gaps/mis-sorts
     sql = """
         SELECT
-            id, race_no, date, state, track, type, description, prize,
+            id, race_no, date, state, track, meeting_id, type, description, prize,
             condition, class, age, sex, distance_m, bonus, url
         FROM race_program
         WHERE date(date) >= date(:start)
@@ -71,7 +73,12 @@ def list_races(
     if limit is not None:
         sql += " LIMIT :limit OFFSET :offset"
 
-    params = {"start": start, "end": end, "limit": limit if limit is not None else 0, "offset": offset}
+    params = {
+        "start": start,
+        "end": end,
+        "limit": limit if limit is not None else 0,
+        "offset": offset,
+    }
 
     eng = get_engine()
     with eng.connect() as conn:
