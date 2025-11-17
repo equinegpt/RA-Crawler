@@ -3,123 +3,161 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import re
-import time
-from collections import defaultdict
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple, Optional
 
 import requests
 from sqlalchemy import create_engine, text
 
-PF_API_URL = "https://api.puntingform.com.au/v2/form/meetingslist"
-# Allow override via env; fall back to the key you provided
-PF_API_KEY_DEFAULT = "c867b2f9-d740-4cce-b772-801708c8191d"
-PF_API_KEY = os.getenv("PF_API_KEY", PF_API_KEY_DEFAULT)
-
+PF_URL = "https://api.puntingform.com.au/v2/form/meetingslist"
+PF_API_KEY_ENV = "PF_API_KEY"
 REQ_TIMEOUT = 20
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; RA-MeetingsBackfill/1.0)",
-    "Accept": "application/json",
+
+
+# ---------- helpers ----------
+
+def _iso_to_pf_date(iso_date: str) -> str:
+    """
+    '2025-11-19' -> '19 Nov 2025'
+    PF says 'D MMM YYYY'; it happily accepts a leading zero, but we strip it anyway.
+    """
+    dt = datetime.strptime(iso_date, "%Y-%m-%d")
+    s = dt.strftime("%d %b %Y")  # '19 Nov 2025' or '09 Nov 2025'
+    if s[0] == "0":
+        s = s[1:]
+    return s
+
+
+def _fetch_pf_meetings_for_date(iso_date: str, api_key: str) -> List[dict]:
+    """
+    Call PF /meetingslist for one date. Returns payLoad list or [] on any non-200 / weird status.
+    """
+    meeting_date_str = _iso_to_pf_date(iso_date)
+    params = {
+        "apiKey": api_key,
+        "meetingDate": meeting_date_str,
+    }
+    try:
+        r = requests.get(PF_URL, params=params, timeout=REQ_TIMEOUT)
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:
+        print(f"[meeting_ids] ERROR fetching PF meetings for {iso_date}: {e}", file=sys.stderr)
+        return []
+
+    if data.get("statusCode") != 200 or data.get("status") not in (0, "0", None):
+        print(f"[meeting_ids] PF non-OK status for {iso_date}: {data.get('statusCode')} / {data.get('status')}",
+              file=sys.stderr)
+        return []
+
+    payload = data.get("payLoad") or []
+    if not isinstance(payload, list):
+        return []
+
+    return payload
+
+
+# Normalise track names so RA + PF line up despite sponsors / branding.
+_SPONSOR_WORDS = {
+    "sportsbet",
+    "ladbrokes",
+    "bet365",
+    "picklebet",
+    "aquis",
+    "thomas",
+    "farms",
+    "tab",
+    "southside",
+}
+
+_GENERIC_WORDS = {
+    "racecourse",
+    "raceclub",
+    "race",
+    "club",
+    "rc",
+    "park",
+    "poly",
+    "picnic",
 }
 
 
-def db_engine(url: Optional[str] = None):
-    url = url or os.getenv("DATABASE_URL", "sqlite:///./racing.db")
-    return create_engine(url, future=True)
-
-
-def _norm_track_name(name: str) -> str:
+def _normalize_track_name(name: str) -> str:
     """
-    Normalise track names so sponsor fluff and generic suffixes don't break matching.
+    Aggressive but safe-ish normaliser:
 
-    Examples:
-      "Southside Pakenham"      -> "PAKENHAM"
-      "Ladbrokes Geelong"       -> "GEELONG"
-      "Canterbury Park"         -> "CANTERBURY"
-      "Aquis Park Gold Coast"   -> "GOLD COAST"
-      "Randwick"                -> "RANDWICK"
+    - lowercases
+    - strips punctuation to spaces
+    - drops sponsor words ('sportsbet', 'ladbrokes', 'aquis', 'bet365', 'picklebet', 'southside', 'tab', etc.)
+    - drops generic noise ('park', 'rc', 'racecourse', 'poly', 'picnic', etc.)
+    - collapses whitespace
     """
     if not name:
         return ""
 
-    # Normalise whitespace and punctuation
-    s = re.sub(r"[^\w\s-]", " ", str(name))   # drop weird punctuation but keep hyphens
-    s = re.sub(r"[\s\-]+", " ", s).strip()    # collapse spaces/hyphens
+    s = name.lower()
 
-    tokens = [t for t in s.upper().split(" ") if t]
+    # punctuation → space
+    s = re.sub(r"[^\w\s]", " ", s)
 
-    # Common sponsor / branding tokens we can safely drop
-    SPONSOR_TOKENS = {
-        "LADBROKES",
-        "SPORTSBET",
-        "SOUTHSIDE",
-        "AQUIS",
-        "NEDS",
-        "TAB",
-        "TABCOMAU",
-        "XXXX",
-        "CARLTON",
-        "DRAUGHT",
-    }
+    tokens = []
+    for tok in s.split():
+        if tok in _SPONSOR_WORDS:
+            continue
+        if tok in _GENERIC_WORDS:
+            continue
+        tokens.append(tok)
 
-    # Generic course words that can be dropped when other tokens remain
-    GENERIC_TOKENS = {
-        "RACECOURSE",
-        "RACETRACK",
-        "RACEWAY",
-        "RACES",
-    }
-
-    # 1) Strip sponsor branding tokens
-    tokens = [t for t in tokens if t not in SPONSOR_TOKENS]
-
-    # 2) If there are multiple tokens, drop generic course words + PARK
-    if len(tokens) > 1:
-        tokens = [t for t in tokens if t not in GENERIC_TOKENS and t != "PARK"]
+    if not tokens:
+        # fall back to basic cleaned string so we don't end up with empty key
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
 
     return " ".join(tokens)
 
-def _fetch_meetings_for_date(date_iso: str) -> List[Dict]:
+
+def _build_pf_meeting_map(pf_meetings: List[dict]) -> Dict[Tuple[str, str], str]:
     """
-    Call Punting Form meetingslist for a given YYYY-MM-DD date.
-    meetingDate must be 'D MMM YYYY' (e.g. '30 May 2025').
+    Build {(STATE, normalized_track_name) -> meetingId} map from PF payload.
     """
-    if not PF_API_KEY:
-        raise RuntimeError("PF_API_KEY is not configured")
+    out: Dict[Tuple[str, str], str] = {}
+    for m in pf_meetings:
+        track = m.get("track") or {}
+        name = track.get("name") or ""
+        state = (track.get("state") or "").upper()
+        meeting_id = m.get("meetingId")
+        if not name or not state or not meeting_id:
+            continue
+        key = (state, _normalize_track_name(name))
+        out.setdefault(key, str(meeting_id))
+    return out
 
-    dt = datetime.strptime(date_iso, "%Y-%m-%d")
-    # 'D MMM YYYY' → e.g. '14 Nov 2025'
-    meeting_date_str = f"{dt.day} {dt.strftime('%b')} {dt.year}"
 
-    params = {
-        "apiKey": PF_API_KEY,
-        "meetingDate": meeting_date_str,
-    }
-    resp = requests.get(PF_API_URL, params=params, headers=HEADERS, timeout=REQ_TIMEOUT)
-    resp.raise_for_status()
-    data = resp.json() or {}
-    payload = data.get("payLoad") or data.get("payload") or []
-    return payload
-
+# ---------- main backfill ----------
 
 def backfill(
-    url: Optional[str] = None,
+    db_url: Optional[str] = None,
     dry_run: bool = False,
     limit: Optional[int] = None,
-    sleep_sec: float = 0.3,
 ) -> Tuple[int, int]:
-    eng = db_engine(url)
+    """
+    Backfill race_program.meeting_id using PF /meetingslist.
 
-    # Ensure meeting_id column exists (for older DBs)
-    with eng.begin() as conn:
-        rows = conn.exec_driver_sql("PRAGMA table_info(race_program)").fetchall()
-        col_names = {r[1] for r in rows}
-        if "meeting_id" not in col_names:
-            conn.exec_driver_sql("ALTER TABLE race_program ADD COLUMN meeting_id TEXT")
-            print("[meeting_ids] Added meeting_id column to race_program")
+    Returns (meetings_updated, rows_updated).
+    Works with both SQLite and Postgres — no PRAGMA usage.
+    """
+    api_key = os.getenv(PF_API_KEY_ENV)
+    if not api_key:
+        raise RuntimeError(f"{PF_API_KEY_ENV} env var is required for backfill_meeting_ids")
 
-    # Get distinct meetings that don't have meeting_id yet
+    if not db_url:
+        db_url = os.getenv("DATABASE_URL", "sqlite:///./data/racing.db")
+
+    eng = create_engine(db_url, future=True)
+
+    # 1) find distinct (date, state, track) with empty / NULL meeting_id
     sel = text("""
         SELECT date, state, track
         FROM race_program
@@ -129,131 +167,90 @@ def backfill(
     """)
 
     with eng.connect() as conn:
-        meetings = conn.execute(sel).fetchall()
+        rows = conn.execute(sel).fetchall()
 
-    if limit is not None:
-        meetings = meetings[:limit]
+    if limit is not None and limit > 0:
+        rows = rows[:limit]
 
-    if not meetings:
-        print("[meeting_ids] No meetings without meeting_id found.")
-        return 0, 0
+    # group by date so we only hit PF once per day
+    date_groups: Dict[str, List[Tuple[str, str]]] = {}
+    for d, s, t in rows:
+        if not d or not s or not t:
+            continue
+        date_groups.setdefault(d, []).append((s, t))
 
-    # Group by date so we only call PF once per date
-    by_date: Dict[str, List[Tuple[str, str]]] = defaultdict(list)
-    for d, state, track in meetings:
-        by_date[str(d)].append((state, track))
-
-    print(f"[meeting_ids] candidate meetings: {len(meetings)} across {len(by_date)} date(s)")
+    print(f"[meeting_ids] candidate meetings: {len(rows)} across {len(date_groups)} date(s)")
 
     meetings_updated = 0
     rows_updated = 0
 
-    for idx, (date_iso, mts) in enumerate(sorted(by_date.items()), start=1):
-        print(f"[meeting_ids] ({idx}/{len(by_date)}) date={date_iso} meetings={len(mts)}")
-        try:
-            pf_meetings = _fetch_meetings_for_date(date_iso)
-        except Exception as e:
-            print(f"[meeting_ids] ERROR fetching PF meetings for {date_iso}: {e}")
-            time.sleep(sleep_sec)
+    for i, (d, items) in enumerate(sorted(date_groups.items()), start=1):
+        print(f"[meeting_ids] ({i}/{len(date_groups)}) date={d} meetings={len(items)}")
+
+        pf_meetings = _fetch_pf_meetings_for_date(d, api_key)
+        if not pf_meetings:
+            print(f"[meeting_ids] No PF meetings map built for {d}, skipping.")
             continue
 
-        # Build (state, norm_track_name) -> meetingId map
-        pf_map: Dict[Tuple[str, str], str] = {}
-        for m in pf_meetings:
-            tinfo = m.get("track") or {}
-            tname = tinfo.get("name")
-            tstate = tinfo.get("state")
-            mid = m.get("meetingId")
-            if not (tname and tstate and mid):
-                continue
-            key = (str(tstate).upper(), _norm_track_name(tname))
-            pf_map[key] = str(mid)
+        pf_map = _build_pf_meeting_map(pf_meetings)
 
         if not pf_map:
-            print(f"[meeting_ids] No PF meetings map built for {date_iso}, skipping.")
-            time.sleep(sleep_sec)
+            print(f"[meeting_ids] Empty PF map for {d}, skipping.")
             continue
 
-        # Update all matching meetings for this date
-        # Update all matching meetings for this date
-        with eng.begin() as tx:
-            for state, track in mts:
-                state_up = str(state).upper()
-                ra_norm = _norm_track_name(track)
-                key = (state_up, ra_norm)
+        # apply updates
+        with eng.begin() as conn:
+            for state, track in items:
+                key = (state.upper(), _normalize_track_name(track))
                 mid = pf_map.get(key)
-
-                # Fuzzy fallback if no exact (state, norm_name) match
                 if not mid:
-                    ra_tokens = set(ra_norm.split())
-                    best_mid = None
-                    best_score = 0
-                    ambiguous = False
-
-                    for (pf_state, pf_name_norm), cand_mid in pf_map.items():
-                        if pf_state != state_up:
-                            continue
-                        pf_tokens = set(pf_name_norm.split())
-                        inter = ra_tokens & pf_tokens
-                        score = len(inter)
-                        if score == 0:
-                            continue
-
-                        if score > best_score:
-                            best_score = score
-                            best_mid = cand_mid
-                            ambiguous = False
-                        elif score == best_score and score > 0:
-                            # Another PF meeting with the same overlap → ambiguous
-                            ambiguous = True
-
-                    if best_score > 0 and not ambiguous:
-                        mid = best_mid
-
-                if not mid:
-                    # No reliable match found; leave meeting_id NULL for this meeting
+                    # no confident match; leave NULL
                     continue
 
                 if dry_run:
+                    # count but don't actually write
                     meetings_updated += 1
+                    # assume ~8 races/meeting; we won't know exact rowcount without hitting DB
                     continue
 
-                res = tx.execute(
+                res = conn.execute(
                     text("""
                         UPDATE race_program
                         SET meeting_id = :mid
-                        WHERE date = :d AND state = :s AND track = :trk
-                          AND (meeting_id IS NULL OR TRIM(COALESCE(meeting_id,'')) = '')
+                        WHERE date = :d AND state = :s AND track = :t
                     """),
-                    {"mid": mid, "d": date_iso, "s": state, "trk": track},
+                    {"mid": mid, "d": d, "s": state, "t": track},
                 )
-                if res.rowcount:
+                if res.rowcount and res.rowcount > 0:
                     meetings_updated += 1
                     rows_updated += res.rowcount
 
-        print(f"[meeting_ids] date={date_iso} → meetings_updated so far={meetings_updated}, rows={rows_updated}")
-        time.sleep(sleep_sec)
+        print(f"[meeting_ids] date={d} → meetings_updated so far={meetings_updated}, rows={rows_updated}")
 
     print(f"[meeting_ids] DONE meetings_updated={meetings_updated}, rows_updated={rows_updated}")
     return meetings_updated, rows_updated
 
 
-def main():
+# ---------- CLI ----------
+
+def main() -> None:
     ap = argparse.ArgumentParser(description="Backfill race_program.meeting_id from Punting Form meetingslist.")
-    ap.add_argument("--url", help="DATABASE_URL (defaults to env DATABASE_URL or sqlite:///./racing.db)")
-    ap.add_argument("--dry-run", action="store_true", help="Do not write; just report.")
-    ap.add_argument("--limit", type=int, help="Process only this many meetings.")
+    ap.add_argument("--url", help="DATABASE_URL (defaults to env DATABASE_URL or sqlite:///./data/racing.db)")
+    ap.add_argument("--dry-run", action="store_true", help="Do not write; just log what would change.")
+    ap.add_argument("--limit", type=int, help="Limit number of (date,state,track) meetings to process.")
     args = ap.parse_args()
 
-    meetings_updated, rows_updated = backfill(
-        url=args.url,
-        dry_run=args.dry_run,
-        limit=args.limit,
-    )
-    if args.dry_run:
-        print(f"[meeting_ids] (dry-run) would update {meetings_updated} meetings / {rows_updated} rows.")
-    else:
-        print(f"[meeting_ids] done: meetings_updated={meetings_updated}, rows_updated={rows_updated}")
+    try:
+        meetings_updated, rows_updated = backfill(
+            db_url=args.url,
+            dry_run=args.dry_run,
+            limit=args.limit,
+        )
+        if args.dry_run:
+            print(f"[meeting_ids] (dry-run) would update {meetings_updated} meetings, {rows_updated} rows.")
+    except Exception as e:
+        print(f"[meeting_ids] ERROR: {e}", file=sys.stderr)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
