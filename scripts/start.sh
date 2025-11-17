@@ -3,10 +3,19 @@ set -euo pipefail
 
 APP_ROOT="/opt/render/project/src"
 SEED_DB="$APP_ROOT/data/racing.db"
+SEED_VER_FILE="$APP_ROOT/data/seed.version"
 
 RUN_DB="/data/racing.db"
+RUN_VER_FILE="/data/.seed_version"
 
 echo "[start] DATABASE_URL=${DATABASE_URL:-<unset>}"
+
+# If we're NOT using sqlite, skip all the /data seeding logic
+if [[ "${DATABASE_URL:-}" != sqlite:* ]]; then
+  echo "[start] non-sqlite DATABASE_URL → skipping /data seeding"
+  exec uvicorn api.main:app --host 0.0.0.0 --port "${PORT:-10000}"
+fi
+
 echo "[start] checking runtime DB…"
 
 copy_needed=0
@@ -32,5 +41,5 @@ else
   echo "[start] keeping existing /data/racing.db"
 fi
 
-# finally start the API
+# finally start the API (sqlite mode)
 exec uvicorn api.main:app --host 0.0.0.0 --port "${PORT:-10000}"

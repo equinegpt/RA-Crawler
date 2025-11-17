@@ -8,7 +8,7 @@ Back-compat for callers that invoke:
   - upsert_program_rows(connection, rows)
 
 Behavior:
-  * Ensures race_program table + unique index exist
+  * Ensures race_program table + unique index exist (SQLite only)
   * Normalizes date to YYYY-MM-DD
   * UPDATE first; if no match, INSERT
   * Safe transaction handling for Engine/Connection/no-arg modes
@@ -55,26 +55,92 @@ CREATE UNIQUE INDEX IF NOT EXISTS ix_race_program_identity
 ON race_program (date, state, track, race_no);
 """
 
+
+def _detect_dialect_name_from_conn(conn: Connection) -> Optional[str]:
+    """
+    Best-effort way to get the dialect name from a Connection.
+    Returns 'sqlite', 'postgresql', etc., or None if unknown.
+    """
+    try:
+        return conn.engine.dialect.name  # type: ignore[union-attr]
+    except Exception:
+        try:
+            return conn.dialect.name  # type: ignore[attr-defined]
+        except Exception:
+            return None
+
+
+def _ensure_meeting_id_column(conn: Connection) -> None:
+    """
+    Add meeting_id column if missing (for existing SQLite DBs).
+    No-op on Postgres or other dialects.
+    """
+    dialect_name = _detect_dialect_name_from_conn(conn)
+    if dialect_name != "sqlite":
+        # Don't run PRAGMA / ALTER TABLE on Postgres.
+        return
+
+    try:
+        rows = conn.exec_driver_sql("PRAGMA table_info(race_program)").fetchall()
+        col_names = {r[1] for r in rows}
+        if "meeting_id" not in col_names:
+            conn.exec_driver_sql("ALTER TABLE race_program ADD COLUMN meeting_id TEXT")
+            if RA_DB_VERBOSE:
+                print("[crawler] Added meeting_id column to race_program (sqlite)")
+    except Exception as e:
+        if RA_DB_VERBOSE:
+            print(f"[crawler] WARNING: could not ensure meeting_id column: {e}")
+
+
 def _ensure_schema_via_engine(eng: Engine) -> None:
+    """
+    Ensure schema exists when only an Engine is passed.
+
+    - On SQLite: create table + unique index (if missing) and ensure meeting_id.
+    - On Postgres: NO-OP (schema managed separately via init_pg_schema).
+    """
+    if eng.dialect.name != "sqlite":
+        # Postgres / others → do not attempt SQLite DDL here.
+        if RA_DB_VERBOSE:
+            print(f"[crawler] _ensure_schema_via_engine: skipping DDL for dialect={eng.dialect.name}")
+        return
+
     with eng.begin() as conn:
         conn.exec_driver_sql(CREATE_TABLE_SQL)
         conn.exec_driver_sql(CREATE_UNIQUE_INDEX_SQL)
+        _ensure_meeting_id_column(conn)
+
 
 def _ensure_schema_via_connection(conn: Connection) -> None:
+    """
+    Ensure schema exists when a Connection is passed.
+
+    - On SQLite: create table + unique index (if missing) and ensure meeting_id.
+    - On Postgres: NO-OP.
+    """
+    dialect_name = _detect_dialect_name_from_conn(conn)
+    if dialect_name != "sqlite":
+        if RA_DB_VERBOSE:
+            print(f"[crawler] _ensure_schema_via_connection: skipping DDL for dialect={dialect_name}")
+        return
+
     manage_tx = not conn.in_transaction()
+    tx = None
     if manage_tx:
         tx = conn.begin()
     try:
         conn.exec_driver_sql(CREATE_TABLE_SQL)
         conn.exec_driver_sql(CREATE_UNIQUE_INDEX_SQL)
-        if manage_tx:
+        _ensure_meeting_id_column(conn)
+        if manage_tx and tx is not None:
             tx.commit()
     except Exception:
-        if manage_tx:
+        if manage_tx and tx is not None:
             tx.rollback()
         raise
 
 # ------------------------ Normalization -----------------------
+
 
 def _norm_date(d: Any) -> Optional[str]:
     if not d:
@@ -95,14 +161,17 @@ def _norm_date(d: Any) -> Optional[str]:
     parts = base.split("-")
     if len(parts) == 3 and all(parts):
         y, m, d2 = parts
-        if len(m) == 1: m = "0" + m
-        if len(d2) == 1: d2 = "0" + d2
+        if len(m) == 1:
+            m = "0" + m
+        if len(d2) == 1:
+            d2 = "0" + d2
         return f"{y}-{m}-{d2}"
 
     try:
         return datetime.fromisoformat(base).strftime("%Y-%m-%d")
     except Exception:
         return s  # last resort: preserve
+
 
 def _coerce_int(v: Any) -> Optional[int]:
     if v is None:
@@ -116,6 +185,7 @@ def _coerce_int(v: Any) -> Optional[int]:
         return int(s)
     except Exception:
         return None
+
 
 def _clean_str(v: Any) -> Optional[str]:
     if v is None:
@@ -155,60 +225,28 @@ INSERT_SQL = text("""
     )
 """)
 
+
 def _prep_params(r: Dict[str, Any]) -> Dict[str, Any]:
     return {
-        "race_no":    _coerce_int(r.get("race_no")),
-        "date":       _norm_date(r.get("date")),
-        "state":      (_clean_str(r.get("state")) or ""),
-        "track":      (_clean_str(r.get("track")) or ""),
-        "meeting_id": _clean_str(r.get("meeting_id")),   # ← new
-        "type":       _clean_str(r.get("type")),
-        "description":(_clean_str(r.get("description")) or ""),
-        "prize":      _coerce_int(r.get("prize")),
-        "condition":  _clean_str(r.get("condition")),
-        "class":      _clean_str(r.get("class")),
-        "age":        _clean_str(r.get("age")),
-        "sex":        _clean_str(r.get("sex")),
-        "distance_m": _coerce_int(r.get("distance_m")),
-        "bonus":      _clean_str(r.get("bonus")),
-        "url":        (_clean_str(r.get("url")) or ""),
+        "race_no":     _coerce_int(r.get("race_no")),
+        "date":        _norm_date(r.get("date")),
+        "state":       (_clean_str(r.get("state")) or ""),
+        "track":       (_clean_str(r.get("track")) or ""),
+        "meeting_id":  _clean_str(r.get("meeting_id")),
+        "type":        _clean_str(r.get("type")),
+        "description": (_clean_str(r.get("description")) or ""),
+        "prize":       _coerce_int(r.get("prize")),
+        "condition":   _clean_str(r.get("condition")),
+        "class":       _clean_str(r.get("class")),
+        "age":         _clean_str(r.get("age")),
+        "sex":         _clean_str(r.get("sex")),
+        "distance_m":  _coerce_int(r.get("distance_m")),
+        "bonus":       _clean_str(r.get("bonus")),
+        "url":         (_clean_str(r.get("url")) or ""),
     }
 
-def _ensure_meeting_id_column(conn) -> None:
-    """Add meeting_id column if missing (for existing SQLite DBs)."""
-    try:
-        rows = conn.exec_driver_sql("PRAGMA table_info(race_program)").fetchall()
-        col_names = {r[1] for r in rows}
-        if "meeting_id" not in col_names:
-            conn.exec_driver_sql("ALTER TABLE race_program ADD COLUMN meeting_id TEXT")
-            if RA_DB_VERBOSE:
-                print("[crawler] Added meeting_id column to race_program")
-    except Exception as e:
-        if RA_DB_VERBOSE:
-            print(f"[crawler] WARNING: could not ensure meeting_id column: {e}")
-
-def _ensure_schema_via_engine(eng: Engine) -> None:
-    with eng.begin() as conn:
-        conn.exec_driver_sql(CREATE_TABLE_SQL)
-        conn.exec_driver_sql(CREATE_UNIQUE_INDEX_SQL)
-        _ensure_meeting_id_column(conn)
-
-def _ensure_schema_via_connection(conn: Connection) -> None:
-    manage_tx = not conn.in_transaction()
-    if manage_tx:
-        tx = conn.begin()
-    try:
-        conn.exec_driver_sql(CREATE_TABLE_SQL)
-        conn.exec_driver_sql(CREATE_UNIQUE_INDEX_SQL)
-        _ensure_meeting_id_column(conn)
-        if manage_tx:
-            tx.commit()
-    except Exception:
-        if manage_tx:
-            tx.rollback()
-        raise
-
 # ---------------------- Public entrypoint ---------------------
+
 
 def upsert_program_rows(*args) -> Tuple[int, int]:
     """
@@ -237,9 +275,9 @@ def upsert_program_rows(*args) -> Tuple[int, int]:
             conn = first
             rows = second
         else:
-            # tolerate callers passing a random object; try to treat first as rows
-            # and ignore second (but this is unusual). Better to raise:
-            raise TypeError("upsert_program_rows expects (rows) or (Engine, rows) or (Connection, rows)")
+            raise TypeError(
+                "upsert_program_rows expects (rows) or (Engine, rows) or (Connection, rows)"
+            )
     else:
         raise TypeError("upsert_program_rows expects 1 or 2 arguments")
 
@@ -248,13 +286,14 @@ def upsert_program_rows(*args) -> Tuple[int, int]:
     if not rows_list:
         return (0, 0)
 
-    # Acquire engine/connection as needed
+    # Case 1: explicit Connection
     if conn is not None:
-        # Use provided connection; ensure schema with this connection
         _ensure_schema_via_connection(conn)
         manage_tx = not conn.in_transaction()
+        tx = None
         if manage_tx:
             tx = conn.begin()
+
         saved = 0
         updated = 0
         try:
@@ -270,17 +309,18 @@ def upsert_program_rows(*args) -> Tuple[int, int]:
                 else:
                     conn.execute(INSERT_SQL, p)
                     saved += 1
-            if manage_tx:
+            if manage_tx and tx is not None:
                 tx.commit()
         except Exception:
-            if manage_tx:
+            if manage_tx and tx is not None:
                 tx.rollback()
             raise
+
         if RA_DB_VERBOSE:
-            print(f"[crawler] upsert saved={saved} updated={updated}")
+            print(f"[crawler] upsert via-conn saved={saved} updated={updated}")
         return (saved, updated)
 
-    # No explicit connection: use engine (provided or default)
+    # Case 2: engine (provided or default)
     if eng is None:
         eng = get_engine()
 
@@ -303,10 +343,11 @@ def upsert_program_rows(*args) -> Tuple[int, int]:
                 saved += 1
 
     if RA_DB_VERBOSE:
-        print(f"[crawler] upsert saved={saved} updated={updated}")
+        print(f"[crawler] upsert via-eng saved={saved} updated={updated}")
     return (saved, updated)
 
 # ---------------------- Optional utility ----------------------
+
 
 def count_rows() -> int:
     try:
