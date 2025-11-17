@@ -7,7 +7,7 @@ from datetime import datetime, date, timedelta
 from itertools import groupby
 from typing import Dict, List, Optional, Tuple
 
-import httpx
+import requests
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
@@ -46,7 +46,7 @@ class RaMeetingKey:
     track: str
 
 
-# ----------------- Name helpers -----------------
+# ----------------- Name + date helpers -----------------
 
 
 def _iso_to_pf_date(value) -> str:
@@ -111,10 +111,9 @@ def _fetch_pf_meetings_for_date(
     if debug:
         print(f"[meeting_ids] Fetching PF meetings for {meeting_date_iso} as '{pf_date}'")
 
-    with httpx.Client(timeout=15) as client:
-        resp = client.get(PF_MEETINGS_URL, params=params)
-        resp.raise_for_status()
-        data = resp.json()
+    resp = requests.get(PF_MEETINGS_URL, params=params, timeout=15)
+    resp.raise_for_status()
+    data = resp.json()
 
     if data.get("statusCode") != 200:
         if debug:
@@ -310,6 +309,7 @@ def backfill(
     meetings_updated = 0
     rows_updated = 0
 
+    # meetings is already ORDER BY date,state,track, so groupby is safe
     with eng.begin() as conn:
         for date_iso, group in groupby(meetings, key=lambda m: m.date_iso):
             group_list = list(group)
