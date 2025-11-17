@@ -5,7 +5,7 @@ import argparse
 import os
 import sys
 import re
-from datetime import datetime
+from datetime import datetime, date
 from typing import Dict, List, Tuple, Optional
 
 import requests
@@ -17,18 +17,30 @@ REQ_TIMEOUT = 20
 
 
 # ---------- helpers ----------
+def _iso_to_pf_date(value) -> str:
+    """
+    Accepts either:
+      - 'YYYY-MM-DD' string
+      - datetime.date
+      - datetime.datetime
 
-def _iso_to_pf_date(iso_date: str) -> str:
+    Returns PF-style 'D MMM YYYY' (e.g. '19 Nov 2025').
     """
-    '2025-11-19' -> '19 Nov 2025'
-    PF says 'D MMM YYYY'; it happily accepts a leading zero, but we strip it anyway.
-    """
-    dt = datetime.strptime(iso_date, "%Y-%m-%d")
-    s = dt.strftime("%d %b %Y")  # '19 Nov 2025' or '09 Nov 2025'
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, date):
+        # combine with midnight so we can reuse datetime formatting
+        dt = datetime.combine(value, datetime.min.time())
+    else:
+        # assume string-ish
+        s = str(value).strip()
+        # defensive: take first 10 chars 'YYYY-MM-DD'
+        dt = datetime.strptime(s[:10], "%Y-%m-%d")
+
+    s = dt.strftime("%d %b %Y")  # '09 Nov 2025' / '19 Nov 2025'
     if s[0] == "0":
         s = s[1:]
     return s
-
 
 def _fetch_pf_meetings_for_date(iso_date: str, api_key: str) -> List[dict]:
     """
