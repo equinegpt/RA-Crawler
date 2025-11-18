@@ -5,6 +5,7 @@ from typing import List, Any, Dict
 
 from fastapi import APIRouter
 from sqlalchemy import text
+import os
 
 from .db import get_engine
 
@@ -63,7 +64,7 @@ def list_races() -> List[Dict[str, Any]]:
                 "race_no": r["race_no"],
                 "date": date_str,
                 "state": r["state"],
-                # 👇 THIS is the important bit
+                # meeting_id → meetingId
                 "meetingId": r["meeting_id"],
                 "track": r["track"],
                 "type": r["type"],
@@ -80,3 +81,61 @@ def list_races() -> List[Dict[str, Any]]:
         )
 
     return out
+
+
+@races_router.get("/races/debug-db")
+def debug_db():
+    """
+    Debug endpoint to see exactly which DB the API is using,
+    and what meeting_id looks like for a handful of known meetings.
+    """
+    eng = get_engine()
+    url_str = str(eng.url)
+    env_url = os.getenv("DATABASE_URL")
+
+    with eng.connect() as c:
+        min_date = c.execute(text("SELECT MIN(date) FROM race_program")).scalar()
+        max_date = c.execute(text("SELECT MAX(date) FROM race_program")).scalar()
+
+        sample_rows = c.execute(
+            text(
+                """
+                SELECT id, date, state, track, meeting_id
+                FROM race_program
+                WHERE date IN ('2025-11-18','2025-11-19','2025-11-20')
+                  AND track IN (
+                    'bet365 Park Kyneton',
+                    'Canterbury Park',
+                    'Doomben',
+                    'Kilcoy',
+                    'Newcastle'
+                  )
+                ORDER BY date, state, track, id
+                """
+            )
+        ).mappings().all()
+
+    def _date_str(d):
+        if hasattr(d, "isoformat"):
+            return d.isoformat()
+        return str(d) if d is not None else None
+
+    sample = []
+    for r in sample_rows:
+        sample.append(
+            {
+                "id": r["id"],
+                "date": _date_str(r["date"]),
+                "state": r["state"],
+                "track": r["track"],
+                "meeting_id": r["meeting_id"],
+            }
+        )
+
+    return {
+        "engine_url": url_str,
+        "env_DATABASE_URL": env_url,
+        "min_date": _date_str(min_date),
+        "max_date": _date_str(max_date),
+        "sample": sample,
+    }
