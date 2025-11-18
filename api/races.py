@@ -51,7 +51,6 @@ def list_races() -> List[Dict[str, Any]]:
 
     out: List[Dict[str, Any]] = []
     for r in rows:
-        # SQLAlchemy .mappings() gives dict-like rows
         dt = r["date"]
         if hasattr(dt, "isoformat"):
             date_str = dt.isoformat()
@@ -64,8 +63,7 @@ def list_races() -> List[Dict[str, Any]]:
                 "race_no": r["race_no"],
                 "date": date_str,
                 "state": r["state"],
-                # meeting_id → meetingId
-                "meetingId": r["meeting_id"],
+                "meetingId": r["meeting_id"],  # 👈 this is the one we care about
                 "track": r["track"],
                 "type": r["type"],
                 "description": r["description"],
@@ -86,11 +84,11 @@ def list_races() -> List[Dict[str, Any]]:
 @races_router.get("/races/debug-db")
 def debug_db():
     """
-    Debug endpoint to see exactly which DB the API is using,
-    and what meeting_id looks like for a handful of known meetings.
+    Debug endpoint: shows which DB the API is actually hitting,
+    and what meeting_id looks like for the known problematic meetings.
     """
     eng = get_engine()
-    url_str = str(eng.url)
+    engine_url = str(eng.url)
     env_url = os.getenv("DATABASE_URL")
 
     with eng.connect() as c:
@@ -108,7 +106,9 @@ def debug_db():
                     'Canterbury Park',
                     'Doomben',
                     'Kilcoy',
-                    'Newcastle'
+                    'Thomas Farms RC Murray Bridge',
+                    'Newcastle',
+                    'Belmont'
                   )
                 ORDER BY date, state, track, id
                 """
@@ -120,20 +120,19 @@ def debug_db():
             return d.isoformat()
         return str(d) if d is not None else None
 
-    sample = []
-    for r in sample_rows:
-        sample.append(
-            {
-                "id": r["id"],
-                "date": _date_str(r["date"]),
-                "state": r["state"],
-                "track": r["track"],
-                "meeting_id": r["meeting_id"],
-            }
-        )
+    sample = [
+        {
+            "id": r["id"],
+            "date": _date_str(r["date"]),
+            "state": r["state"],
+            "track": r["track"],
+            "meeting_id": r["meeting_id"],
+        }
+        for r in sample_rows
+    ]
 
     return {
-        "engine_url": url_str,
+        "engine_url": engine_url,
         "env_DATABASE_URL": env_url,
         "min_date": _date_str(min_date),
         "max_date": _date_str(max_date),
