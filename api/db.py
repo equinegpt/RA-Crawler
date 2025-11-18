@@ -1,40 +1,50 @@
 # api/db.py
+from __future__ import annotations
+
 import os
 from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
 
-# One path for *everything* in local dev. Change only if you really must.
-_DEFAULT_URL = "sqlite:////Users/andrewholmes/web-crawl-db-api/data/racing.db"
-DATABASE_URL = os.getenv("DATABASE_URL", _DEFAULT_URL)
+# -------------------------------------------------------------------
+# Single source of truth for the DB URL
+# -------------------------------------------------------------------
 
-engine = create_engine(
+# 1) Prefer DATABASE_URL from the environment (Render / shell)
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+# 2) Fallback ONLY if it's completely unset (for local dev)
+if not DATABASE_URL:
+    # Local dev default – you can change this if you like
+    DATABASE_URL = "sqlite:///./data/racing.db"
+
+# Create global engine
+engine: Engine = create_engine(
     DATABASE_URL,
     future=True,
     pool_pre_ping=True,
 )
 
-
-def get_engine():
+def get_engine() -> Engine:
+    """Return the global SQLAlchemy engine."""
     return engine
 
 
-def ensure_schema():
+def ensure_schema() -> None:
     """
-    Ensure the race_program table exists for local SQLite dev.
+    Very simple schema creator.
 
-    On Postgres (Render) we don't do any DDL here; the schema is created
-    separately via api.init_pg_schema.
+    - Works for both SQLite and Postgres.
+    - DOES NOT use SQLite-specific PRAGMA calls (which break on Postgres).
+    - We rely on api/init_pg_schema.py for richer PG setup.
     """
-    # Only run this on SQLite
-    if engine.dialect.name != "sqlite":
-        return
-
     ddl = """
     CREATE TABLE IF NOT EXISTS race_program (
-      id          INTEGER PRIMARY KEY,
+      id          SERIAL PRIMARY KEY,
       race_no     INTEGER,
-      date        TEXT,
+      date        DATE,
       state       TEXT,
       track       TEXT,
+      meeting_id  TEXT,
       type        TEXT,
       description TEXT,
       prize       INTEGER,
@@ -44,16 +54,13 @@ def ensure_schema():
       sex         TEXT,
       distance_m  INTEGER,
       bonus       TEXT,
-      meeting_id  TEXT,
       url         TEXT
     );
     """
-    with engine.begin() as c:
-        # Make sure table exists (no-op if it already does)
-        c.exec_driver_sql(ddl)
-
-        # For existing DBs, ensure meeting_id column exists (SQLite-specific)
-        rows = c.exec_driver_sql("PRAGMA table_info(race_program)").fetchall()
-        col_names = {r[1] for r in rows}
-        if "meeting_id" not in col_names:
-            c.exec_driver_sql("ALTER TABLE race_program ADD COLUMN meeting_id TEXT")
+    try:
+        with engine.begin() as c:
+            c.exec_driver_sql(ddl)
+    except Exception:
+        # If running against an existing schema this is effectively a no-op.
+        # We don't care if this fails on PG as long as the table already exists.
+        pass
