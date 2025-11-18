@@ -80,6 +80,51 @@ def list_races() -> List[Dict[str, Any]]:
 
     return out
 
+@races_router.get("/races/debug-db")
+def debug_db() -> dict:
+    """
+    Debug endpoint to see which DB the API is actually talking to.
+    """
+    eng = get_engine()
+    url = str(eng.url)
+
+    # Sample a few problematic rows (Kyneton, Canterbury, Doomben, Kilcoy, Murray Bridge, Belmont, Newcastle)
+    sample_sql = text("""
+        SELECT id, date, state, track, meeting_id
+        FROM race_program
+        WHERE date IN ('2025-11-18','2025-11-19','2025-11-20')
+          AND track IN (
+            'bet365 Park Kyneton',
+            'Canterbury Park',
+            'Doomben',
+            'Kilcoy',
+            'Thomas Farms RC Murray Bridge',
+            'Belmont',
+            'Newcastle'
+          )
+        ORDER BY date, state, track, id
+        LIMIT 60
+    """)
+
+    with eng.connect() as c:
+        rows = [dict(r) for r in c.execute(sample_sql).mappings().all()]
+
+    return {
+        "engine_url": url,
+        "env_DATABASE_URL": os.getenv("DATABASE_URL", "<unset>"),
+        "backend": eng.url.get_backend_name(),  # 'postgresql' or 'sqlite'
+        "min_date": str(
+            eng.connect()
+              .execute(text("SELECT MIN(date) FROM race_program"))
+              .scalar()
+        ),
+        "max_date": str(
+            eng.connect()
+              .execute(text("SELECT MAX(date) FROM race_program"))
+              .scalar()
+        ),
+        "sample": rows,
+    }
 
 @races_router.get("/races/debug-db")
 def debug_db():
