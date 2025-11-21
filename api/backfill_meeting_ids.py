@@ -113,8 +113,16 @@ def canonical_track_name(raw: str) -> str:
 
     # Collapse whitespace
     s = " ".join(s.split())
-    return s
 
+    # 🔁 Special-case Southside variants so RA + PF align
+    # RA: "Southside Pakenham" / "Southside Cranbourne"
+    # PF: "Pakenham" / "Cranbourne"
+    if s.startswith("southside cranbourne"):
+        return "cranbourne"
+    if s.startswith("southside pakenham"):
+        return "pakenham"
+
+    return s
 
 # --------- PF API fetch ----------
 
