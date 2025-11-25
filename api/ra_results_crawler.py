@@ -7,10 +7,14 @@ from typing import Iterable, Mapping, Any, List
 import requests
 from bs4 import BeautifulSoup
 from sqlalchemy import text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
-from .db import SessionLocal
+from .db import get_engine
 from .models import RAResult
+
+# Create our own SessionLocal based on the existing engine helper
+_engine = get_engine()
+SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False)
 
 
 class RAResultsCrawler:
@@ -137,45 +141,14 @@ class RAResultsCrawler:
         """
         Parse a single RA meeting results page into RAResult objects.
 
-        This is the one place you MUST customise based on the actual
-        Racing Australia HTML structure.
-
-        For now, this raises NotImplementedError so it fails loudly instead
+        TODO: implement based on the actual Racing Australia HTML structure.
+        Currently this raises NotImplementedError so it fails loudly instead
         of silently doing nothing.
         """
         soup = BeautifulSoup(html, "lxml")
 
-        # TODO: Inspect the RA results HTML and wire selectors here.
-        # Rough sketch of what you might end up with:
-        #
-        # results: list[RAResult] = []
-        # for race_block in soup.select("table.race-results"):
-        #     race_no = int( ... )
-        #     for row in race_block.select("tbody tr"):
-        #         horse_number = ...
-        #         horse_name = ...
-        #         finishing_pos = ...
-        #         is_scratched = ...
-        #         margin_lens = ...
-        #         starting_price = ...
-        #
-        #         results.append(
-        #             RAResult(
-        #                 meeting_date=meeting_date,
-        #                 state=state,
-        #                 track=track,
-        #                 race_no=race_no,
-        #                 horse_number=horse_number,
-        #                 horse_name=horse_name,
-        #                 finishing_pos=finishing_pos,
-        #                 is_scratched=is_scratched,
-        #                 margin_lens=margin_lens,
-        #                 starting_price=starting_price,
-        #             )
-        #         )
-        #
-        # return results
-
+        # TODO: replace NotImplementedError with real parsing logic
+        # once you've inspected the RA HTML.
         raise NotImplementedError(
             "TODO: implement _parse_meeting_results_html() based on RA HTML structure"
         )
