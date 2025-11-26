@@ -17,61 +17,8 @@ from .models import RAResult
 _engine = get_engine()
 SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False)
 
-# Text markers we see on RA Results.aspx pages
-HEADER_LINE = "Colour Finish No. Horse Trainer Jockey Margin Bar. Weight Penalty Starting Price"
+# Matches lines like: "Race 1 - 2:45PM BOXING DAY TICKETS ON SALE NOW ..."
 RACE_HEADING_RE = re.compile(r"^Race\s+(\d+)\s+-")
-
-
-def _parse_int_prefix(token: str) -> Optional[int]:
-    """Parse leading integer from a token like '11e' → 11."""
-    m = re.match(r"(\d+)", token)
-    if not m:
-        return None
-    try:
-        return int(m.group(1))
-    except ValueError:
-        return None
-
-
-def _extract_horse_name(tokens: List[str], tab_token: str) -> Optional[str]:
-    """
-    Best-effort extraction of horse name from a runner line.
-
-    Pattern we typically see:
-      Image 1 4 CANSORT Image: BOBS Silver Bonus Scheme Chris Waller Andrew Mallyon 3 57.5kg $2.25F
-      Image 1 2 DONT CALL ME HONEY Paul Shailer Dylan Turner 2 60kg $2.60F
-
-    We:
-    - Start just after the TAB number token
-    - Skip 'Image' noise
-    - Stop at BOBS/Bonus/Scheme, '$', or obvious weight/margin tokens
-    - Cap at a few words to avoid swallowing trainer/jockey.
-    """
-    try:
-        idx = tokens.index(tab_token)
-    except ValueError:
-        return None
-
-    name_parts: List[str] = []
-    for t in tokens[idx + 1 :]:
-        if t in {"Image", "Image:"}:
-            continue
-        if t in {"BOBS", "Bonus", "Scheme", "Silver"}:
-            break
-        if t.startswith("$"):
-            break
-        # Stop once we hit something that looks like a margin/weight token
-        if re.search(r"\d", t) and ("L" in t or "kg" in t):
-            break
-
-        name_parts.append(t)
-        # Most names are 1–4 words; don't run into trainer/jockey.
-        if len(name_parts) >= 4:
-            break
-
-    if not name_parts:
-        return None
-    return " ".join(name_parts)
 
 
 class RAResultsCrawler:
@@ -203,24 +150,15 @@ class RAResultsCrawler:
 
         RA Results.aspx structure is effectively plain text with markers like:
 
-          Race 1 - 2:45PM ...
-          ...
+          Race 1 - 2:45PM BOXING DAY ...
           Colour Finish No. Horse Trainer Jockey Margin Bar. Weight Penalty Starting Price
-          Image 1 4 CANSORT ... 3 57.5kg $2.25F
-          Image 2 3 ADEQUATE EZE ... 1.18L 5 57.5kg $6
-          ...
-          Race 2 - ...
+          【Image】 1 4 CANSORT ... 3 57.5kg $2.25F
 
         We:
         - Track the current "Race N -" heading.
-        - After each header line, treat following lines as runners until
-          the next "Race" heading.
-        - For each runner line:
-            * find starting price token (last token starting with '$')
-            * find numeric tokens like "1", "4", "11e" → finish & TAB
-            * extract a short horse name from just after the TAB
-        - Lines with no '$' are treated as emergencies / non-starters
-          and stored with is_scratched=True, finishing_pos=None.
+        - For subsequent lines that contain an "Image" token and numbers,
+          treat them as runner rows.
+        - Lines with no '$' get stored as scratched/emergencies.
         """
         soup = BeautifulSoup(html, "lxml")
         text_content = soup.get_text("\n", strip=True)
@@ -228,67 +166,87 @@ class RAResultsCrawler:
 
         results: List[RAResult] = []
         current_race_no: Optional[int] = None
-        in_results_block = False
 
         for line in lines:
             # Detect "Race N - ..." headings
             m_heading = RACE_HEADING_RE.match(line)
             if m_heading:
                 current_race_no = int(m_heading.group(1))
-                in_results_block = False
                 continue
 
-            # Detect the header that precedes the per-runner rows
-            if HEADER_LINE in line:
-                # Only start reading runners if we know which race we're in
-                if current_race_no is not None:
-                    in_results_block = True
+            # Ignore anything before we see a Race heading
+            if current_race_no is None:
                 continue
 
-            if not in_results_block or current_race_no is None:
+            # Skip obvious non-runner lines
+            if "Colour Finish No. Horse Trainer Jockey Margin Bar. Weight Penalty Starting Price" in line:
                 continue
-
-            # Next race heading ends the current results block
-            if line.startswith("Race "):
-                in_results_block = False
+            if line.startswith("Official Comments:"):
                 continue
-
-            # Skip commentary / counts
-            if line.startswith("Official Comments:") or line.startswith(
-                "Total Number of starters"
-            ):
+            if line.startswith("Total Number of starters"):
                 continue
 
             tokens = line.split()
             if not tokens:
                 continue
 
-            # Identify starting price token like "$2.25F", "$6", "$2F"
+            # Runner lines always have something that includes "Image"
+            if not any("Image" in t for t in tokens):
+                continue
+
+            # Identify numeric tokens like "1", "4", "11e"
+            numeric_tokens = [t for t in tokens if re.fullmatch(r"\d{1,2}e?", t)]
+            if not numeric_tokens:
+                continue  # nothing numeric to work with
+
+            # Find starting price token like "$2.25F", "$6", "$2F"
             sp_token: Optional[str] = None
             for t in reversed(tokens):
                 if t.startswith("$"):
                     sp_token = t
                     break
 
-            # Numeric tokens like "1", "4", "11e"
-            numeric_tokens = [t for t in tokens if re.fullmatch(r"\d{1,2}e?", t)]
-            if not numeric_tokens:
-                # Can't identify TAB/finish for this line
-                continue
+            def int_prefix(tok: str) -> Optional[int]:
+                m = re.match(r"(\d+)", tok)
+                if not m:
+                    return None
+                try:
+                    return int(m.group(1))
+                except ValueError:
+                    return None
 
-            # ------------------------------------------------------------------
-            # Scratch / emergency lines – no SP (SP=0 or missing) → mark scratched
-            # ------------------------------------------------------------------
+            def extract_name(from_tab_token: str) -> str:
+                try:
+                    idx = tokens.index(from_tab_token)
+                except ValueError:
+                    return ""
+                name_parts: List[str] = []
+                for t in tokens[idx + 1 :]:
+                    if t in {"Image", "Image:"}:
+                        continue
+                    if t in {"BOBS", "Bonus", "Scheme", "Silver"}:
+                        break
+                    if t.startswith("$"):
+                        break
+                    # Cut off at margin/weight-like tokens
+                    if re.search(r"\d", t) and ("L" in t or "kg" in t):
+                        break
+                    name_parts.append(t)
+                    # Most names are short; avoid swallowing trainer/jockey
+                    if len(name_parts) >= 4:
+                        break
+                return " ".join(name_parts).strip()
+
+            # --------------------------------------------------------------
+            # Case 1: emergencies / non-starters – no SP token
+            # --------------------------------------------------------------
             if sp_token is None:
-                # For emergencies, RA tends to show just "12e STEPLIKA LION ... 0"
                 tab_token = numeric_tokens[0]
-                horse_number = _parse_int_prefix(tab_token)
+                horse_number = int_prefix(tab_token)
                 if horse_number is None:
                     continue
 
-                horse_name = _extract_horse_name(tokens, tab_token)
-                if not horse_name:
-                    horse_name = f"Horse {horse_number}"
+                horse_name = extract_name(tab_token) or f"Horse {horse_number}"
 
                 results.append(
                     RAResult(
@@ -306,32 +264,30 @@ class RAResultsCrawler:
                 )
                 continue
 
-            # ------------------------------------------------------------------
-            # Normal starters – must have finish position + TAB + SP
-            # ------------------------------------------------------------------
+            # --------------------------------------------------------------
+            # Case 2: normal starters – need finish pos + TAB + SP
+            # --------------------------------------------------------------
             if len(numeric_tokens) < 2:
-                # Need at least [finish, TAB]
+                # need at least [finish, TAB]
                 continue
 
             fin_token, tab_token = numeric_tokens[0], numeric_tokens[1]
-            finishing_pos = _parse_int_prefix(fin_token)
-            horse_number = _parse_int_prefix(tab_token)
+            finishing_pos = int_prefix(fin_token)
+            horse_number = int_prefix(tab_token)
             if finishing_pos is None or horse_number is None:
                 continue
 
-            # Parse SP as float from "$2.25F" / "$6"
+            # Parse SP float from "$2.25F" / "$6"
             starting_price: Optional[float] = None
-            stripped = sp_token.lstrip("$")
-            m_sp = re.search(r"\d+(?:\.\d+)?", stripped)
+            stripped_sp = sp_token.lstrip("$")
+            m_sp = re.search(r"\d+(?:\.\d+)?", stripped_sp)
             if m_sp:
                 try:
                     starting_price = float(m_sp.group(0))
                 except ValueError:
                     starting_price = None
 
-            horse_name = _extract_horse_name(tokens, tab_token)
-            if not horse_name:
-                horse_name = f"Horse {horse_number}"
+            horse_name = extract_name(tab_token) or f"Horse {horse_number}"
 
             results.append(
                 RAResult(
@@ -343,7 +299,7 @@ class RAResultsCrawler:
                     horse_name=horse_name,
                     finishing_pos=finishing_pos,
                     is_scratched=False,
-                    margin_lens=None,         # can be added later if needed
+                    margin_lens=None,      # can be extended later
                     starting_price=starting_price,
                 )
             )
