@@ -17,63 +17,6 @@ from .models import RAResult
 _engine = get_engine()
 SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False)
 
-# Text markers we see on RA Results.aspx pages
-HEADER_LINE = "Colour Finish No. Horse Trainer Jockey Margin Bar. Weight Penalty Starting Price"
-# Matches lines like: "Race 1 - 2:45PM BOXING DAY TICKETS ON SALE NOW ..."
-RACE_HEADING_RE = re.compile(r"^Race\s+(\d+)\s+-")
-
-
-def _parse_int_prefix(token: str) -> Optional[int]:
-    """Parse leading integer from a token like '11e' → 11."""
-    m = re.match(r"(\d+)", token)
-    if not m:
-        return None
-    try:
-        return int(m.group(1))
-    except ValueError:
-        return None
-
-
-def _extract_horse_name(tokens: List[str], tab_token: str) -> Optional[str]:
-    """
-    Best-effort extraction of horse name from a runner line.
-
-    Pattern we typically see:
-      Image 1 4 CANSORT Image: BOBS Silver Bonus Scheme Chris Waller Andrew Mallyon 3 57.5kg $2.25F
-      Image 1 2 DONT CALL ME HONEY Paul Shailer Dylan Turner 2 60kg $2.60F
-
-    We:
-    - Start just after the TAB number token
-    - Skip 'Image' noise
-    - Stop at BOBS/Bonus/Scheme, '$', or obvious weight/margin tokens
-    - Cap at a few words to avoid swallowing trainer/jockey.
-    """
-    try:
-        idx = tokens.index(tab_token)
-    except ValueError:
-        return None
-
-    name_parts: List[str] = []
-    for t in tokens[idx + 1 :]:
-        if t in {"Image", "Image:"}:
-            continue
-        if t in {"BOBS", "Bonus", "Scheme", "Silver"}:
-            break
-        if t.startswith("$"):
-            break
-        # Stop once we hit something that looks like a margin/weight token
-        if re.search(r"\d", t) and ("L" in t or "kg" in t):
-            break
-
-        name_parts.append(t)
-        # Most names are 1–4 words; don't run into trainer/jockey.
-        if len(name_parts) >= 4:
-            break
-
-    if not name_parts:
-        return None
-    return " ".join(name_parts)
-
 
 class RAResultsCrawler:
     """
@@ -202,132 +145,148 @@ class RAResultsCrawler:
         """
         Parse a single RA meeting results page into RAResult objects.
 
-        RA Results.aspx structure is effectively plain text with markers like:
+        We parse HTML tables whose header row contains the typical
+        "Colour / Finish / No. / Horse / Trainer / Jockey / ... / Starting Price"
+        columns, e.g.:
 
-          Race 1 - 2:45PM ...
-          Colour Finish No. Horse Trainer Jockey Margin Bar. Weight Penalty Starting Price
-          Image 1 4 CANSORT Image: BOBS Silver Bonus Scheme Chris Waller Andrew Mallyon 3 57.5kg $2.25F
-          ...
+            Colour Finish No. Horse Trainer Jockey Margin Bar. Weight Penalty Starting Price
 
-        Strategy:
-        - Track the current "Race N -" heading.
-        - Flip on `in_results_block` when we hit the header line.
-        - While in_results_block:
-            * each non-empty line with ≥2 numeric tokens is treated as a runner row
-            * if the line has a '$' token → starter; otherwise → emergency/scratched.
+        For each such table we:
+        - Infer the race number from the nearest preceding "Race N -" text.
+        - For each body row, extract finish, horse number, horse name, margin and SP.
+
+        Scratched/emergency runners appear as rows with no '$' starting price;
+        we mark those as is_scratched=True and finishing_pos=None.
         """
         soup = BeautifulSoup(html, "lxml")
-        text_content = soup.get_text("\n", strip=True)
-        lines = [ln.strip() for ln in text_content.splitlines() if ln.strip()]
-
         results: List[RAResult] = []
-        current_race_no: Optional[int] = None
-        in_results_block = False
 
-        for line in lines:
-            # Detect "Race N - ..." headings
-            m_heading = RACE_HEADING_RE.match(line)
-            if m_heading:
-                current_race_no = int(m_heading.group(1))
-                in_results_block = False
-                continue
-
-            # Detect the header that precedes the per-runner rows
-            if HEADER_LINE in line:
-                if current_race_no is not None:
-                    in_results_block = True
-                continue
-
-            if not in_results_block or current_race_no is None:
-                continue
-
-            # Next race heading ends the current results block
-            if line.startswith("Race "):
-                in_results_block = False
-                continue
-
-            tokens = line.split()
-            if not tokens:
-                continue
-
-            # Numeric tokens like "1", "4", "11e"
-            numeric_tokens = [t for t in tokens if re.fullmatch(r"\d{1,2}e?", t)]
-            if len(numeric_tokens) == 0:
-                continue  # nothing numeric to work with
-
-            # Find starting price token like "$2.25F", "$6", "$2F"
-            sp_token: Optional[str] = None
-            for t in reversed(tokens):
-                if t.startswith("$"):
-                    sp_token = t
+        for table in soup.find_all("table"):
+            # --- 1) Find the header row for a results table ---
+            header_row = None
+            for tr in table.find_all("tr"):
+                header_text = " ".join(
+                    cell.get_text(" ", strip=True)
+                    for cell in tr.find_all(["th", "td"])
+                )
+                if (
+                    "Finish" in header_text
+                    and "No" in header_text
+                    and "Horse" in header_text
+                    and "Trainer" in header_text
+                    and "Jockey" in header_text
+                    and "Starting Price" in header_text
+                ):
+                    header_row = tr
                     break
 
-            # --------------------------------------------------------------
-            # Case 1: emergencies / non-starters – no SP token
-            # --------------------------------------------------------------
-            if sp_token is None:
-                tab_token = numeric_tokens[-1]  # TAB is usually the last numeric for 0-lines
-                horse_number = _parse_int_prefix(tab_token)
+            if header_row is None:
+                continue  # not a results table
+
+            # --- 2) Try to find the "Race X -" text immediately before this table ---
+            race_no = 0
+            race_text_node = table.find_previous(string=re.compile(r"Race\s+(\d+)\s+-"))
+            if race_text_node:
+                m_race = re.search(r"Race\s+(\d+)\s+-", race_text_node)
+                if m_race:
+                    race_no = int(m_race.group(1))
+
+            # Helper to parse int prefix (handles "11e" → 11)
+            def int_prefix(token: str) -> Optional[int]:
+                m = re.match(r"(\d+)", token)
+                if not m:
+                    return None
+                try:
+                    return int(m.group(1))
+                except ValueError:
+                    return None
+
+            # --- 3) All rows after the header row are runners ---
+            for row in header_row.find_next_siblings("tr"):
+                cells = row.find_all("td")
+                if len(cells) < 4:
+                    continue
+
+                # Squash all text; skip empty / junk rows.
+                row_text = " ".join(
+                    c.get_text(" ", strip=True) for c in cells
+                ).strip()
+                if not row_text:
+                    continue
+
+                # Finish & TAB columns
+                finish_text = cells[1].get_text(strip=True)
+                no_text = cells[2].get_text(strip=True)
+
+                # If neither finish nor number present, probably not a runner row.
+                if not finish_text and not no_text:
+                    continue
+
+                # Starting price is typically the last column.
+                sp_text = cells[-1].get_text(strip=True)
+                has_price = sp_text.startswith("$")
+
+                # Scratched/emergency rows have no '$' SP.
+                is_scratched = not has_price
+
+                # Horse number from the "No." column
+                horse_number = int_prefix(no_text)
                 if horse_number is None:
                     continue
 
-                horse_name = _extract_horse_name(tokens, tab_token) or f"Horse {horse_number}"
+                # Horse name from the "Horse" column.
+                horse_cell = cells[3]
+                horse_raw = horse_cell.get_text(" ", strip=True)
 
-                results.append(
-                    RAResult(
-                        meeting_date=meeting_date,
-                        state=state,
-                        track=track,
-                        race_no=current_race_no,
-                        horse_number=horse_number,
-                        horse_name=horse_name,
-                        finishing_pos=None,
-                        is_scratched=True,
-                        margin_lens=None,
-                        starting_price=None,
-                    )
-                )
-                continue
+                # Many horses will have an extra "Image: BOBS Silver Bonus Scheme" piece;
+                # if so, trim everything from "Image:" onwards.
+                img_idx = horse_raw.find("Image:")
+                if img_idx != -1:
+                    horse_raw = horse_raw[:img_idx].strip()
 
-            # --------------------------------------------------------------
-            # Case 2: normal starters – need finish pos + TAB + SP
-            # --------------------------------------------------------------
-            if len(numeric_tokens) < 2:
-                # need at least [finish, TAB]
-                continue
+                horse_name = horse_raw or f"Horse {horse_number}"
 
-            fin_token, tab_token = numeric_tokens[0], numeric_tokens[1]
-            finishing_pos = _parse_int_prefix(fin_token)
-            horse_number = _parse_int_prefix(tab_token)
-            if finishing_pos is None or horse_number is None:
-                continue
+                # Finishing position: only for starters
+                finishing_pos: Optional[int] = None
+                if not is_scratched:
+                    finishing_pos = int_prefix(finish_text)
 
-            # Parse SP float from "$2.25F" / "$6"
-            starting_price: Optional[float] = None
-            stripped_sp = sp_token.lstrip("$")
-            m_sp = re.search(r"\d+(?:\.\d+)?", stripped_sp)
-            if m_sp:
-                try:
-                    starting_price = float(m_sp.group(0))
-                except ValueError:
-                    starting_price = None
+                # Margin (optional) – based on the column order "Margin Bar. Weight ..."
+                margin_lens: Optional[float] = None
+                if not is_scratched and len(cells) > 6:
+                    margin_text = cells[6].get_text(strip=True)
+                    if margin_text:
+                        m_margin = re.search(r"([\d\.]+)", margin_text)
+                        if m_margin:
+                            try:
+                                margin_lens = float(m_margin.group(1))
+                            except ValueError:
+                                margin_lens = None
 
-            horse_name = _extract_horse_name(tokens, tab_token) or f"Horse {horse_number}"
+                # Starting price (optional)
+                starting_price: Optional[float] = None
+                if has_price:
+                    stripped_sp = sp_text.lstrip("$")
+                    m_sp = re.search(r"([\d\.]+)", stripped_sp)
+                    if m_sp:
+                        try:
+                            starting_price = float(m_sp.group(1))
+                        except ValueError:
+                            starting_price = None
 
-            results.append(
-                RAResult(
+                rr = RAResult(
                     meeting_date=meeting_date,
                     state=state,
                     track=track,
-                    race_no=current_race_no,
+                    race_no=race_no,
                     horse_number=horse_number,
                     horse_name=horse_name,
                     finishing_pos=finishing_pos,
-                    is_scratched=False,
-                    margin_lens=None,      # can be extended later
+                    is_scratched=is_scratched,
+                    margin_lens=margin_lens,
                     starting_price=starting_price,
                 )
-            )
+                results.append(rr)
 
         return results
 
