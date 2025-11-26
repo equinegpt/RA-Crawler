@@ -8,6 +8,7 @@ from sqlalchemy import text
 
 from .db import ensure_schema, get_engine
 from .races import races_router
+from .routes import results  # 👈 NEW: results router module
 
 
 # Make sure the DB schema exists (safe for Postgres too)
@@ -30,6 +31,9 @@ def health():
 
 # Keep any existing routes defined in api.races (for back-compat)
 app.include_router(races_router)
+
+# 👇 NEW: expose RA results endpoints (/results, /results/refresh)
+app.include_router(results.router)
 
 
 @app.get("/races")

@@ -116,20 +116,23 @@ class RAResultsCrawler:
         """
         Build the Racing Australia results URL for a given meeting.
 
-        Right now we just start from the race_program.url column and let you
-        tweak it if RA has a distinct "results" URL vs "fields".
-
-        TODO: If RA uses a separate route for results, adjust this function
-        to transform the field URL into the corresponding results URL.
+        We start from the race_program.url column, which currently points
+        at RaceProgram.aspx, and map it to the corresponding Results.aspx
+        URL for the same Key.
         """
         url = meeting_row.get("url")
         if not url:
             return None
 
-        # Example (if you need to tweak):
-        # return url.replace("FreeFields/DisplayMeeting.aspx", "FreeFields/Results.aspx")
+        # Normal RA pattern:
+        #   RaceProgram.aspx?Key=2025Nov25,NSW,Ballina
+        # → Results.aspx?Key=2025Nov25,NSW,Ballina
+        if "RaceProgram.aspx" in url:
+            return url.replace("RaceProgram.aspx", "Results.aspx")
 
+        # Fallback: if it's already a Results URL or some other variant, just use it.
         return url
+
 
     def _parse_meeting_results_html(
         self,
@@ -141,17 +144,142 @@ class RAResultsCrawler:
         """
         Parse a single RA meeting results page into RAResult objects.
 
-        TODO: implement based on the actual Racing Australia HTML structure.
-        Currently this raises NotImplementedError so it fails loudly instead
-        of silently doing nothing.
+        We:
+        - Find each table whose header contains the typical "Colour / Finish / Horse" fields.
+        - Infer the race number from the closest preceding "Race X -" text.
+        - For each runner row, extract finish, horse number, horse name, margin, and SP.
         """
-        soup = BeautifulSoup(html, "lxml")
+        import re
 
-        # TODO: replace NotImplementedError with real parsing logic
-        # once you've inspected the RA HTML.
-        raise NotImplementedError(
-            "TODO: implement _parse_meeting_results_html() based on RA HTML structure"
-        )
+        soup = BeautifulSoup(html, "lxml")
+        results: list[RAResult] = []
+
+        # Iterate over all tables and pick the ones that look like "results" tables.
+        for table in soup.find_all("table"):
+            header_cell = table.find(
+                lambda tag: tag.name in ("th", "td")
+                and "Colour" in tag.get_text()
+                and "Finish" in tag.get_text()
+                and "Horse" in tag.get_text()
+            )
+            if not header_cell:
+                continue
+
+            # Try to find the "Race X -" text immediately before this table.
+            race_no = 0
+            race_text_node = table.find_previous(
+                string=re.compile(r"Race\s+(\d+)\s+-")
+            )
+            if race_text_node:
+                m = re.search(r"Race\s+(\d+)\s+-", race_text_node)
+                if m:
+                    race_no = int(m.group(1))
+
+            header_row = header_cell.find_parent("tr")
+            if header_row is None:
+                continue
+
+            # All rows after the header row are runners (until the table ends).
+            for row in header_row.find_next_siblings("tr"):
+                cells = row.find_all("td")
+                if not cells:
+                    continue
+
+                # Squash all text; skip empty / junk rows.
+                row_text = " ".join(c.get_text(" ", strip=True) for c in cells).strip()
+                if not row_text:
+                    continue
+
+                # We expect at least: Colour | Finish | No | Horse | ...
+                if len(cells) < 4:
+                    continue
+
+                # --- Finish position / scratched detection ---
+                finish_text = cells[1].get_text(strip=True)
+                no_text = cells[2].get_text(strip=True)
+
+                # If neither finish nor number present, probably not a runner row.
+                if not finish_text and not no_text:
+                    continue
+
+                fin_upper = finish_text.upper()
+                is_scratched = fin_upper.startswith("SCR") or fin_upper in ("", "-", "0")
+
+                finishing_pos: int | None = None
+                if not is_scratched:
+                    m_fin = re.search(r"\d+", finish_text)
+                    if m_fin:
+                        finishing_pos = int(m_fin.group(0))
+                    else:
+                        # If we can't parse a number at all, skip this row.
+                        continue
+
+                # --- Horse number (strip trailing 'e' for emergencies like "11e") ---
+                m_no = re.search(r"\d+", no_text)
+                if not m_no:
+                    continue
+                horse_number = int(m_no.group(0))
+
+                # --- Horse name ---
+                horse_cell = cells[3]
+                horse_raw = horse_cell.get_text(" ", strip=True)
+
+                # Many horses will have an extra "Image: BOBS Silver Bonus Scheme" piece;
+                # if so, trim everything from "Image:" onwards.
+                img_idx = horse_raw.find("Image:")
+                if img_idx != -1:
+                    horse_raw = horse_raw[:img_idx].strip()
+
+                horse_name = horse_raw
+
+                # --- Margin (optional) ---
+                margin = None
+                # Based on the column order "Margin Bar. Weight Penalty Starting Price"
+                # margin is typically the first of those numeric columns.
+                if len(cells) > 6:
+                    margin_text = cells[6].get_text(strip=True)
+                    if margin_text:
+                        m_margin = re.search(r"([\d\.]+)", margin_text)
+                        if m_margin:
+                            try:
+                                margin = float(m_margin.group(1))
+                            except ValueError:
+                                margin = None
+
+                # --- Starting price (optional) ---
+                sp = None
+                sp_text = ""
+                if len(cells) > 10:
+                    sp_text = cells[10].get_text(strip=True)
+                else:
+                    # Fallback: use last cell
+                    sp_text = cells[-1].get_text(strip=True)
+
+                if sp_text:
+                    # Strip '$' and trailing 'F', pick first number.
+                    stripped = sp_text.replace("$", "")
+                    m_sp = re.search(r"([\d\.]+)", stripped)
+                    if m_sp:
+                        try:
+                            sp = float(m_sp.group(1))
+                        except ValueError:
+                            sp = None
+
+                rr = RAResult(
+                    meeting_date=meeting_date,
+                    state=state,
+                    track=track,
+                    race_no=race_no,
+                    horse_number=horse_number,
+                    horse_name=horse_name,
+                    finishing_pos=finishing_pos,
+                    is_scratched=is_scratched,
+                    margin_lens=margin,
+                    starting_price=sp,
+                )
+                results.append(rr)
+
+        return results
 
     def _upsert_result(self, db: Session, rr: RAResult) -> None:
         """
