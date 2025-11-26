@@ -6,14 +6,17 @@ from typing import List
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
-from ..db import SessionLocal
+from ..db import get_engine
 from ..models import RAResult
 from ..ra_results_crawler import RAResultsCrawler
 
-
 router = APIRouter(prefix="/results", tags=["results"])
+
+# Local Session factory based on the same engine the rest of the app uses
+_engine = get_engine()
+SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False)
 
 
 class ResultRow(BaseModel):
@@ -30,10 +33,6 @@ class ResultRow(BaseModel):
 
 
 def _get_db_session() -> Session:
-    """
-    Simple local helper instead of assuming a get_db() dependency
-    exists in db.py. Keeps this router self-contained.
-    """
     return SessionLocal()
 
 
@@ -43,10 +42,6 @@ def list_results(
     state: str | None = Query(None, description="State code, e.g. VIC, NSW"),
     track: str | None = Query(None, description="Track name, e.g. Flemington"),
 ):
-    """
-    List results for a given date, optionally filtered by state/track.
-    This is what the Tips Results Service will call.
-    """
     db = _get_db_session()
     try:
         q = db.query(RAResult).filter(RAResult.meeting_date == date)
@@ -83,18 +78,11 @@ def list_results(
 def refresh_results(
     date: date = Query(..., description="Meeting date (YYYY-MM-DD)"),
 ):
-    """
-    Trigger a crawl of RA results for a given date.
-
-    This is what your 6pm and 11pm Render crons will hit:
-    POST /results/refresh?date=2025-11-26
-    """
     crawler = RAResultsCrawler()
 
     try:
         crawler.fetch_for_date(date)
     except NotImplementedError as nie:
-        # Make it obvious in logs & API if the HTML parser isn't done yet.
         raise HTTPException(status_code=500, detail=str(nie))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"results crawl failed: {exc}")
