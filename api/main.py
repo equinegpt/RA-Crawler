@@ -9,6 +9,7 @@ from sqlalchemy import text
 from .db import ensure_schema, get_engine
 from .races import races_router
 from .routes import results  # 👈 NEW: results router module
+from api.routes_ui_results import router as results_router
 
 
 # Make sure the DB schema exists (safe for Postgres too)
