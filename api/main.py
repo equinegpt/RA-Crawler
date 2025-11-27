@@ -1,4 +1,5 @@
-# api/main.py
+from __future__ import annotations
+
 from datetime import date, datetime
 from typing import Optional
 
@@ -8,9 +9,6 @@ from sqlalchemy import text
 
 from .db import ensure_schema, get_engine
 from .races import races_router
-from .routes import results  # 👈 NEW: results router module
-from api.routes_ui_results import router as results_router
-
 
 # Make sure the DB schema exists (safe for Postgres too)
 ensure_schema()
@@ -33,9 +31,6 @@ def health():
 # Keep any existing routes defined in api.races (for back-compat)
 app.include_router(races_router)
 
-# 👇 NEW: expose RA results endpoints (/results, /results/refresh)
-app.include_router(results.router)
-
 
 @app.get("/races")
 def list_races(
@@ -51,9 +46,6 @@ def list_races(
 ):
     """
     List races, exposing DB `meeting_id` as JSON `meetingId`.
-
-    This reads directly from the DB via get_engine(), so as long as the
-    meeting_id is in race_program, it will appear here.
     """
     eng = get_engine()
 
@@ -113,7 +105,6 @@ def list_races(
                 "race_no": d["race_no"],
                 "date": iso_date,
                 "state": d["state"],
-                # 👇 The important bit: DB meeting_id → JSON meetingId
                 "meetingId": d.get("meeting_id"),
                 "track": d["track"],
                 "type": d.get("type"),
@@ -126,6 +117,92 @@ def list_races(
                 "distance_m": d.get("distance_m"),
                 "bonus": d.get("bonus"),
                 "url": d.get("url"),
+            }
+        )
+
+    return out
+
+
+@app.get("/results")
+def list_results(
+    meeting_date: Optional[str] = Query(
+        None, alias="date", description="Filter by meeting date (YYYY-MM-DD)"
+    ),
+    state: Optional[str] = Query(
+        None, description="Filter by state, e.g. VIC/NSW/QLD"
+    ),
+    track: Optional[str] = Query(
+        None, description="Filter by exact track name"
+    ),
+):
+    """
+    List official RA results from ra_results table.
+
+    This is what the Tips Results Service calls.
+    """
+    eng = get_engine()
+
+    sql = """
+        SELECT
+            id,
+            meeting_date,
+            state,
+            track,
+            race_no,
+            horse_number,
+            horse_name,
+            finishing_pos,
+            is_scratched,
+            margin_lens,
+            starting_price
+        FROM ra_results
+        WHERE 1=1
+    """
+    params: dict[str, object] = {}
+
+    if meeting_date:
+        sql += " AND meeting_date = :meeting_date"
+        params["meeting_date"] = meeting_date
+    if state:
+        sql += " AND state = :state"
+        params["state"] = state
+    if track:
+        sql += " AND track = :track"
+        params["track"] = track
+
+    sql += " ORDER BY meeting_date, state, track, race_no, horse_number"
+
+    with eng.connect() as c:
+        rows = c.execute(text(sql), params).mappings().all()
+
+    out = []
+    for r in rows:
+        d = dict(r)
+
+        raw_date = d.get("meeting_date")
+        if isinstance(raw_date, datetime):
+            iso_date = raw_date.date().isoformat()
+        elif isinstance(raw_date, date):
+            iso_date = raw_date.isoformat()
+        else:
+            iso_date = str(raw_date) if raw_date is not None else None
+
+        margin_lens = d.get("margin_lens")
+        starting_price = d.get("starting_price")
+
+        out.append(
+            {
+                "id": d["id"],
+                "meeting_date": iso_date,
+                "state": d["state"],
+                "track": d["track"],
+                "race_no": d["race_no"],
+                "horse_number": d["horse_number"],
+                "horse_name": d["horse_name"],
+                "finishing_pos": d.get("finishing_pos"),
+                "is_scratched": bool(d.get("is_scratched")),
+                "margin_lens": float(margin_lens) if margin_lens is not None else None,
+                "starting_price": float(starting_price) if starting_price is not None else None,
             }
         )
 
