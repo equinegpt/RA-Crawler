@@ -108,6 +108,10 @@ def canonical_track_name(raw: str) -> str:
       "Aquis Park Gold Coast Poly"     → "gold coast poly"
       "Ladbrokes Geelong"              → "geelong"
       "Southside Pakenham"             → "pakenham"
+      "Mt Gambier" / "Mount Gambier"   → "mount gambier"
+      "Fannie Bay" / "Darwin"          → "darwin"
+      "Rosehill Gardens" / "Rosehill"  → "rosehill"
+      "Yarra Glen" / "Yarra Valley"    → "yarra valley"
     """
     if not raw:
         return ""
@@ -145,6 +149,7 @@ def canonical_track_name(raw: str) -> str:
         "race club incorporated",
         "park",
         "gh",
+        "gardens",   # e.g. "Rosehill Gardens" → "rosehill"
     ]
     for jw in junk_words:
         # Middle of string
@@ -159,16 +164,31 @@ def canonical_track_name(raw: str) -> str:
     # Collapse whitespace
     s = " ".join(s.split())
 
-    # 🔁 Special-case Southside variants so RA + PF align
-    # RA: "Southside Pakenham" / "Southside Cranbourne"
-    # PF: "Pakenham" / "Cranbourne"
-    if s.startswith("southside cranbourne"):
-        return "cranbourne"
-    if s.startswith("southside pakenham"):
-        return "pakenham"
+    # Hard-coded regional aliases & special cases so PF + RA converge
+    alias_map = {
+        # Southside variants (after junk removal they should match exactly)
+        "southside cranbourne": "cranbourne",
+        "southside pakenham": "pakenham",
+
+        # Darwin / Fannie Bay
+        "fannie bay": "darwin",
+        "darwin": "darwin",
+
+        # Rosehill vs Rosehill Gardens
+        "rosehill gardens": "rosehill",
+        "rosehill": "rosehill",
+
+        # Yarra Glen vs Yarra Valley
+        # RA: "bet365 Yarra Valley" → "yarra valley"
+        # PF: "Yarra Glen" → we map to the same key
+        "yarra glen": "yarra valley",
+        "yarra valley": "yarra valley",
+    }
+    # If we have an exact alias, use it
+    if s in alias_map:
+        return alias_map[s]
 
     return s
-
 
 # --------- PF API fetch ----------
 
