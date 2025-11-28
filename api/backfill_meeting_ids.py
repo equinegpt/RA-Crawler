@@ -5,7 +5,7 @@ import os
 import sys
 import re
 from datetime import date, datetime, timedelta
-from typing import Dict, Iterable, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional
 
 import httpx
 from sqlalchemy import create_engine, text
@@ -24,6 +24,40 @@ AUS_STATES = {"NSW", "VIC", "QLD", "SA", "WA", "TAS", "NT", "ACT"}
 
 
 # --------- Helpers: DB + dates ----------
+
+
+def _normalise_track_name(raw: str) -> str:
+    """
+    Normalise track names so PF + RA strings match better.
+
+    Examples:
+      "Mt Gambier"      → "mount gambier"
+      "Mount Gambier"   → "mount gambier"
+      " MOUNT  GAMBIER" → "mount gambier"
+    """
+    if not raw:
+        return ""
+
+    s = raw.strip().lower()
+    # Collapse multiple spaces
+    s = re.sub(r"\s+", " ", s)
+
+    # Normalise common abbreviations / variants at the *start* of the name.
+    # You can extend this over time as you find more mismatches.
+    replacements = [
+        ("mt ", "mount "),
+        ("mt. ", "mount "),
+        ("st ", "saint "),
+        ("st. ", "saint "),
+    ]
+
+    for short, full in replacements:
+        if s.startswith(short):
+            s = full + s[len(short):]
+            break
+
+    return s
+
 
 def _get_engine(url: Optional[str]) -> Engine:
     db_url = url or os.getenv("DATABASE_URL")
@@ -51,10 +85,15 @@ def _today_melb() -> date:
 
 # --------- Track-name canonicalisation ----------
 
+
 def canonical_track_name(raw: str) -> str:
     """
     Aggressively strip sponsors + fluff so RA and PF
     track names converge to the same canonical token.
+
+    This sits *on top of* _normalise_track_name, so things like
+    "Mt Gambier" vs "Mount Gambier" are already aligned before we
+    strip sponsors / fluff.
 
     Examples:
       "Canterbury Park"                → "canterbury"
@@ -68,12 +107,15 @@ def canonical_track_name(raw: str) -> str:
       "Aquis Park Gold Coast"          → "gold coast"
       "Aquis Park Gold Coast Poly"     → "gold coast poly"
       "Ladbrokes Geelong"              → "geelong"
-      "Southside Pakenham"             → "southside pakenham"
+      "Southside Pakenham"             → "pakenham"
     """
     if not raw:
         return ""
 
-    s = raw.strip().lower()
+    # First pass: handle Mt/Mount, St/Saint, spacing, lowercase
+    s = _normalise_track_name(raw)
+    if not s:
+        return ""
 
     # Normalise separators
     s = re.sub(r"[-,/]", " ", s)
@@ -105,11 +147,14 @@ def canonical_track_name(raw: str) -> str:
         "gh",
     ]
     for jw in junk_words:
+        # Middle of string
         s = s.replace(f" {jw} ", " ")
+        # End of string
         if s.endswith(f" {jw}"):
             s = s[: -len(f" {jw}")]
+        # Start of string
         if s.startswith(f"{jw} "):
-            s = s[len(f"{jw} "):]
+            s = s[len(f"{jw} ") :]
 
     # Collapse whitespace
     s = " ".join(s.split())
@@ -124,7 +169,9 @@ def canonical_track_name(raw: str) -> str:
 
     return s
 
+
 # --------- PF API fetch ----------
+
 
 def _format_pf_meeting_date(d: date) -> str:
     """
@@ -177,6 +224,7 @@ def _fetch_pf_meetings_for_date(d: date, debug: bool = False) -> Dict[Tuple[str,
 
 
 # --------- Core backfill ----------
+
 
 def backfill(
     url: Optional[str] = None,
@@ -316,6 +364,7 @@ def backfill(
 
 
 # --------- CLI entrypoint ----------
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Backfill meeting_id using Punting Form meetingslist")
