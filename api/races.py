@@ -1,15 +1,237 @@
 # api/races.py
 from __future__ import annotations
 
-from typing import List, Any, Dict
-
-from fastapi import APIRouter
-from sqlalchemy import text
+from typing import List, Any, Dict, Tuple
+from datetime import date, datetime
 import os
+import re
+
+from fastapi import APIRouter, HTTPException
+from sqlalchemy import text
+
+import httpx
 
 from .db import get_engine
 
 races_router = APIRouter()
+
+# ---------------------------------------------------
+# Helpers for RA ↔ PF track / meeting matching
+# ---------------------------------------------------
+
+
+def _normalize_track_name(name: str | None) -> str:
+    """
+    Lowercase the track name and strip non-alphanumeric characters so that
+    minor formatting differences (spaces, commas, 'Royal', 'Park', etc.) don't matter.
+    Safe on None.
+    """
+    if not name:
+        return ""
+    return re.sub(r"[^a-z0-9]+", "", str(name).lower())
+
+
+# RA (track, state) → PF track.name overrides
+TRACK_NAME_OVERRIDES: dict[Tuple[str, str], str] = {
+    # RA value               → PF track.name
+    ("royal randwick", "NSW"): "Randwick",
+    ("beaumont newcastle", "NSW"): "Beaumont",
+    # Atherton already matches exactly by name
+}
+
+
+def _ra_to_pf_track_name(ra_track: str, state: str) -> str:
+    """
+    Map an RA track name to the corresponding PF track.name, applying
+    manual overrides for known mismatches (e.g. 'Royal Randwick' vs 'Randwick').
+    """
+    key = (_normalize_track_name(ra_track), state.upper())
+    for (ra_name, ra_state), pf_name in TRACK_NAME_OVERRIDES.items():
+        if key == (_normalize_track_name(ra_name), ra_state):
+            return pf_name
+    return ra_track
+
+
+def _fetch_pf_meetings_for_date(target_date: date) -> List[Dict[str, Any]]:
+    """
+    Fetch PF meetings for a specific date.
+
+    Expected PF shape (example):
+
+      [
+        {
+          "track": {
+            "name": "Beaumont",
+            "trackId": "1138",
+            "location": "P",
+            "state": "NSW",
+            ...
+          },
+          "meetingId": "235996",
+          ...
+        },
+        ...
+      ]
+
+    Adjust PF_BASE_URL / path if your PF API is slightly different.
+    """
+    base = os.getenv("PF_RESULTS_BASE_URL", "").rstrip("/")
+    if not base:
+        raise RuntimeError("PF_RESULTS_BASE_URL is not set in environment")
+
+    # You may need to tweak this path/query to match your PF service
+    url = f"{base}/meetings"
+    params = {"date": target_date.isoformat()}
+
+    with httpx.Client(timeout=15.0) as client:
+        resp = client.get(url, params=params)
+        resp.raise_for_status()
+        data = resp.json()
+
+    if isinstance(data, dict) and "meetings" in data:
+        meetings = data["meetings"]
+    else:
+        meetings = data
+
+    if not isinstance(meetings, list):
+        raise ValueError("Unexpected PF /meetings response; expected list or {'meetings': [...]}")
+
+    return meetings
+
+
+def _build_pf_meeting_lookup(pf_meetings: List[Dict[str, Any]]) -> Dict[Tuple[str, str, str], str]:
+    """
+    Build a lookup:
+
+        (state, location, norm_track_name) → pf_meeting_id
+    """
+    lookup: Dict[Tuple[str, str, str], str] = {}
+
+    for m in pf_meetings:
+        track = m.get("track") or {}
+        if not isinstance(track, dict):
+            continue
+
+        name = track.get("name")
+        state = track.get("state")
+        location = track.get("location")  # "M" / "P" / "C"
+
+        pf_meeting_id = m.get("meetingId") or m.get("meeting_id")
+        if not (name and state and location and pf_meeting_id):
+            continue
+
+        key = (str(state), str(location), _normalize_track_name(name))
+        lookup[key] = str(pf_meeting_id)
+
+    return lookup
+
+
+def _sync_pf_meeting_ids_for_date(target_date: date) -> Dict[str, Any]:
+    """
+    For a given date, read RA race_program rows and PF meetings,
+    then update race_program.meeting_id with the correct PF meetingId
+    where it's currently NULL.
+
+    Matching key:
+      (state, type/location, norm_track_name_with_overrides)
+    """
+    eng = get_engine()
+
+    # 1) Fetch PF meetings + build lookup
+    pf_meetings = _fetch_pf_meetings_for_date(target_date)
+    pf_lookup = _build_pf_meeting_lookup(pf_meetings)
+
+    # 2) Fetch distinct (track, state, type) for this date with NULL meeting_id
+    with eng.begin() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT DISTINCT
+                    track,
+                    state,
+                    type
+                FROM race_program
+                WHERE date = :d
+                  AND meeting_id IS NULL
+                """
+            ),
+            {"d": target_date},
+        ).mappings().all()
+
+        updated_meetings: List[Dict[str, Any]] = []
+        missing_meetings: List[Dict[str, Any]] = []
+
+        for r in rows:
+            track = r["track"]
+            state = r["state"]
+            mtype = (r["type"] or "").strip().upper()  # "M"/"P"/"C" from RA
+
+            # Map RA type → PF location code
+            if mtype in {"M", "METRO", "METROPOLITAN"}:
+                loc = "M"
+            elif mtype in {"P", "PROV", "PROVINCIAL"}:
+                loc = "P"
+            else:
+                loc = "C"
+
+            pf_track_name = _ra_to_pf_track_name(track, state)
+            key = (str(state), loc, _normalize_track_name(pf_track_name))
+
+            pf_meeting_id = pf_lookup.get(key)
+
+            if not pf_meeting_id:
+                missing_meetings.append(
+                    {
+                        "track": track,
+                        "state": state,
+                        "type": mtype,
+                        "pf_lookup_key": key,
+                    }
+                )
+                continue
+
+            # 3) Update all rows for (date, track, state, type) with this PF meetingId
+            res = conn.execute(
+                text(
+                    """
+                    UPDATE race_program
+                    SET meeting_id = :mid
+                    WHERE date = :d
+                      AND track = :track
+                      AND state = :state
+                      AND type = :type
+                      AND meeting_id IS NULL
+                    """
+                ),
+                {
+                    "mid": pf_meeting_id,
+                    "d": target_date,
+                    "track": track,
+                    "state": state,
+                    "type": r["type"],
+                },
+            )
+
+            updated_meetings.append(
+                {
+                    "track": track,
+                    "state": state,
+                    "type": mtype,
+                    "pf_meeting_id": pf_meeting_id,
+                    "rows_updated": res.rowcount,
+                }
+            )
+
+    return {
+        "date": target_date.isoformat(),
+        "updated": updated_meetings,
+        "missing": missing_meetings,
+    }
+
+
+# ---------------------------------------------------
+# Public endpoints
+# ---------------------------------------------------
 
 
 @races_router.get("/races")
@@ -63,7 +285,7 @@ def list_races() -> List[Dict[str, Any]]:
                 "race_no": r["race_no"],
                 "date": date_str,
                 "state": r["state"],
-                "meetingId": r["meeting_id"],  # 👈 this is the one we care about
+                "meetingId": r["meeting_id"],  # 👈 PF meetingId, once synced
                 "track": r["track"],
                 "type": r["type"],
                 "description": r["description"],
@@ -80,54 +302,9 @@ def list_races() -> List[Dict[str, Any]]:
 
     return out
 
+
 @races_router.get("/races/debug-db")
 def debug_db() -> dict:
-    """
-    Debug endpoint to see which DB the API is actually talking to.
-    """
-    eng = get_engine()
-    url = str(eng.url)
-
-    # Sample a few problematic rows (Kyneton, Canterbury, Doomben, Kilcoy, Murray Bridge, Belmont, Newcastle)
-    sample_sql = text("""
-        SELECT id, date, state, track, meeting_id
-        FROM race_program
-        WHERE date IN ('2025-11-18','2025-11-19','2025-11-20')
-          AND track IN (
-            'bet365 Park Kyneton',
-            'Canterbury Park',
-            'Doomben',
-            'Kilcoy',
-            'Thomas Farms RC Murray Bridge',
-            'Belmont',
-            'Newcastle'
-          )
-        ORDER BY date, state, track, id
-        LIMIT 60
-    """)
-
-    with eng.connect() as c:
-        rows = [dict(r) for r in c.execute(sample_sql).mappings().all()]
-
-    return {
-        "engine_url": url,
-        "env_DATABASE_URL": os.getenv("DATABASE_URL", "<unset>"),
-        "backend": eng.url.get_backend_name(),  # 'postgresql' or 'sqlite'
-        "min_date": str(
-            eng.connect()
-              .execute(text("SELECT MIN(date) FROM race_program"))
-              .scalar()
-        ),
-        "max_date": str(
-            eng.connect()
-              .execute(text("SELECT MAX(date) FROM race_program"))
-              .scalar()
-        ),
-        "sample": rows,
-    }
-
-@races_router.get("/races/debug-db")
-def debug_db():
     """
     Debug endpoint: shows which DB the API is actually hitting,
     and what meeting_id looks like for the known problematic meetings.
@@ -183,3 +360,34 @@ def debug_db():
         "max_date": _date_str(max_date),
         "sample": sample,
     }
+
+
+@races_router.post("/admin/sync-pf-meeting-ids")
+def admin_sync_pf_meeting_ids(date_str: str) -> Dict[str, Any]:
+    """
+    Admin endpoint to backfill PF meetingId → race_program.meeting_id for a given date.
+
+    Usage example (shell):
+
+        curl -X POST 'https://<ra-crawler>/admin/sync-pf-meeting-ids' \
+          -H 'Content-Type: application/json' \
+          -d '"2025-12-16"'
+
+    (Note the raw JSON string body: "YYYY-MM-DD")
+
+    This will:
+      - fetch PF meetings for that date,
+      - match them to RA races by (state, type/location, track name with overrides),
+      - and update race_program.meeting_id where it is currently NULL.
+    """
+    try:
+        target_date = date.fromisoformat(date_str)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+
+    try:
+        result = _sync_pf_meeting_ids_for_date(target_date)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error syncing PF meeting IDs: {e}")
+
+    return result
