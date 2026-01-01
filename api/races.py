@@ -4,7 +4,6 @@ from __future__ import annotations
 from typing import List, Any, Dict, Tuple
 from datetime import date, datetime
 import os
-import re
 
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import text
@@ -12,44 +11,9 @@ from sqlalchemy import text
 import httpx
 
 from .db import get_engine
+from .backfill_meeting_ids import canonical_track_name
 
 races_router = APIRouter()
-
-# ---------------------------------------------------
-# Helpers for RA ↔ PF track / meeting matching
-# ---------------------------------------------------
-
-
-def _normalize_track_name(name: str | None) -> str:
-    """
-    Lowercase the track name and strip non-alphanumeric characters so that
-    minor formatting differences (spaces, commas, 'Royal', 'Park', etc.) don't matter.
-    Safe on None.
-    """
-    if not name:
-        return ""
-    return re.sub(r"[^a-z0-9]+", "", str(name).lower())
-
-
-# RA (track, state) → PF track.name overrides
-TRACK_NAME_OVERRIDES: dict[Tuple[str, str], str] = {
-    # RA value               → PF track.name
-    ("royal randwick", "NSW"): "Randwick",
-    ("beaumont newcastle", "NSW"): "Beaumont",
-    # Atherton already matches exactly by name
-}
-
-
-def _ra_to_pf_track_name(ra_track: str, state: str) -> str:
-    """
-    Map an RA track name to the corresponding PF track.name, applying
-    manual overrides for known mismatches (e.g. 'Royal Randwick' vs 'Randwick').
-    """
-    key = (_normalize_track_name(ra_track), state.upper())
-    for (ra_name, ra_state), pf_name in TRACK_NAME_OVERRIDES.items():
-        if key == (_normalize_track_name(ra_name), ra_state):
-            return pf_name
-    return ra_track
 
 
 def _fetch_pf_meetings_for_date(target_date: date) -> List[Dict[str, Any]]:
@@ -103,7 +67,7 @@ def _build_pf_meeting_lookup(pf_meetings: List[Dict[str, Any]]) -> Dict[Tuple[st
     """
     Build a lookup:
 
-        (state, location, norm_track_name) → pf_meeting_id
+        (state, location, canonical_track_name) → pf_meeting_id
     """
     lookup: Dict[Tuple[str, str, str], str] = {}
 
@@ -120,7 +84,7 @@ def _build_pf_meeting_lookup(pf_meetings: List[Dict[str, Any]]) -> Dict[Tuple[st
         if not (name and state and location and pf_meeting_id):
             continue
 
-        key = (str(state), str(location), _normalize_track_name(name))
+        key = (str(state), str(location), canonical_track_name(name))
         lookup[key] = str(pf_meeting_id)
 
     return lookup
@@ -174,8 +138,8 @@ def _sync_pf_meeting_ids_for_date(target_date: date) -> Dict[str, Any]:
             else:
                 loc = "C"
 
-            pf_track_name = _ra_to_pf_track_name(track, state)
-            key = (str(state), loc, _normalize_track_name(pf_track_name))
+            # Use canonical_track_name for consistent matching with backfill_meeting_ids
+            key = (str(state), loc, canonical_track_name(track))
 
             pf_meeting_id = pf_lookup.get(key)
 

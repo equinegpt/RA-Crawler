@@ -183,6 +183,17 @@ def canonical_track_name(raw: str) -> str:
         # PF: "Yarra Glen" → we map to the same key
         "yarra glen": "yarra valley",
         "yarra valley": "yarra valley",
+
+        # Royal Randwick vs Randwick
+        # RA: "Royal Randwick" → PF: "Randwick"
+        "royal randwick": "randwick",
+        "randwick": "randwick",
+
+        # Beaumont Newcastle vs Newcastle
+        # RA: "Beaumont Newcastle" → PF: "Newcastle"
+        "beaumont newcastle": "newcastle",
+        "beaumont": "newcastle",  # PF uses "Beaumont" alone
+        "newcastle": "newcastle",
     }
     # If we have an exact alias, use it
     if s in alias_map:
