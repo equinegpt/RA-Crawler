@@ -208,33 +208,47 @@ def list_races() -> List[Dict[str, Any]]:
     - date is returned as "YYYY-MM-DD" string.
     """
     eng = get_engine()
+
+    # Check if race_time column exists (migration may not have run yet)
+    has_race_time = False
     with eng.connect() as c:
-        rows = c.execute(
-            text(
-                """
-                SELECT
-                    id,
-                    race_no,
-                    date,
-                    state,
-                    meeting_id,
-                    track,
-                    type,
-                    description,
-                    prize,
-                    condition,
-                    class,
-                    age,
-                    sex,
-                    distance_m,
-                    bonus,
-                    url,
-                    race_time
-                FROM race_program
-                ORDER BY date, state, track, race_no, id
-                """
-            )
-        ).mappings().all()
+        try:
+            if eng.dialect.name == "postgresql":
+                result = c.execute(text(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = 'race_program' AND column_name = 'race_time'"
+                ))
+                has_race_time = result.fetchone() is not None
+            else:
+                # SQLite
+                result = c.execute(text("PRAGMA table_info(race_program)"))
+                cols = {row[1] for row in result.fetchall()}
+                has_race_time = "race_time" in cols
+        except Exception:
+            has_race_time = False
+
+    # Build query based on available columns
+    if has_race_time:
+        query = """
+            SELECT
+                id, race_no, date, state, meeting_id, track, type,
+                description, prize, condition, class, age, sex,
+                distance_m, bonus, url, race_time
+            FROM race_program
+            ORDER BY date, state, track, race_no, id
+        """
+    else:
+        query = """
+            SELECT
+                id, race_no, date, state, meeting_id, track, type,
+                description, prize, condition, class, age, sex,
+                distance_m, bonus, url
+            FROM race_program
+            ORDER BY date, state, track, race_no, id
+        """
+
+    with eng.connect() as c:
+        rows = c.execute(text(query)).mappings().all()
 
     out: List[Dict[str, Any]] = []
     for r in rows:
@@ -262,7 +276,7 @@ def list_races() -> List[Dict[str, Any]]:
                 "distance_m": r["distance_m"],
                 "bonus": r["bonus"],
                 "url": r["url"],
-                "raceTime": r["race_time"],  # e.g. "1:20PM" when available
+                "raceTime": r.get("race_time") if has_race_time else None,
             }
         )
 

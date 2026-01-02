@@ -10,9 +10,10 @@ RUN_VER_FILE="/data/.seed_version"
 
 echo "[start] DATABASE_URL=${DATABASE_URL:-<unset>}"
 
-# If we're NOT using sqlite, skip all the /data seeding logic
+# If we're NOT using sqlite, run schema migrations and start
 if [[ "${DATABASE_URL:-}" != sqlite:* ]]; then
-  echo "[start] non-sqlite DATABASE_URL → skipping /data seeding"
+  echo "[start] non-sqlite DATABASE_URL → running schema migrations"
+  python -m api.init_pg_schema || echo "[start] WARNING: schema migration failed, continuing anyway"
   exec uvicorn api.main:app --host 0.0.0.0 --port "${PORT:-10000}"
 fi
 
