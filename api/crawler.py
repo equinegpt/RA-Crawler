@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS race_program (
     sex         TEXT,
     distance_m  INTEGER,
     bonus       TEXT,
-    url         TEXT
+    url         TEXT,
+    race_time   TEXT
 );
 """
 
@@ -70,9 +71,9 @@ def _detect_dialect_name_from_conn(conn: Connection) -> Optional[str]:
             return None
 
 
-def _ensure_meeting_id_column(conn: Connection) -> None:
+def _ensure_extra_columns(conn: Connection) -> None:
     """
-    Add meeting_id column if missing (for existing SQLite DBs).
+    Add missing columns (meeting_id, race_time) for existing SQLite DBs.
     No-op on Postgres or other dialects.
     """
     dialect_name = _detect_dialect_name_from_conn(conn)
@@ -87,9 +88,13 @@ def _ensure_meeting_id_column(conn: Connection) -> None:
             conn.exec_driver_sql("ALTER TABLE race_program ADD COLUMN meeting_id TEXT")
             if RA_DB_VERBOSE:
                 print("[crawler] Added meeting_id column to race_program (sqlite)")
+        if "race_time" not in col_names:
+            conn.exec_driver_sql("ALTER TABLE race_program ADD COLUMN race_time TEXT")
+            if RA_DB_VERBOSE:
+                print("[crawler] Added race_time column to race_program (sqlite)")
     except Exception as e:
         if RA_DB_VERBOSE:
-            print(f"[crawler] WARNING: could not ensure meeting_id column: {e}")
+            print(f"[crawler] WARNING: could not ensure extra columns: {e}")
 
 
 def _ensure_schema_via_engine(eng: Engine) -> None:
@@ -108,7 +113,7 @@ def _ensure_schema_via_engine(eng: Engine) -> None:
     with eng.begin() as conn:
         conn.exec_driver_sql(CREATE_TABLE_SQL)
         conn.exec_driver_sql(CREATE_UNIQUE_INDEX_SQL)
-        _ensure_meeting_id_column(conn)
+        _ensure_extra_columns(conn)
 
 
 def _ensure_schema_via_connection(conn: Connection) -> None:
@@ -131,7 +136,7 @@ def _ensure_schema_via_connection(conn: Connection) -> None:
     try:
         conn.exec_driver_sql(CREATE_TABLE_SQL)
         conn.exec_driver_sql(CREATE_UNIQUE_INDEX_SQL)
-        _ensure_meeting_id_column(conn)
+        _ensure_extra_columns(conn)
         if manage_tx and tx is not None:
             tx.commit()
     except Exception:
@@ -208,7 +213,8 @@ UPDATE_SQL = text("""
         sex         = :sex,
         distance_m  = :distance_m,
         bonus       = :bonus,
-        url         = :url
+        url         = :url,
+        race_time   = COALESCE(:race_time, race_time)
     WHERE date    = :date
       AND state   = :state
       AND track   = :track
@@ -218,10 +224,10 @@ UPDATE_SQL = text("""
 INSERT_SQL = text("""
     INSERT INTO race_program (
         race_no, date, state, track, meeting_id, type, description, prize,
-        condition, class, age, sex, distance_m, bonus, url
+        condition, class, age, sex, distance_m, bonus, url, race_time
     ) VALUES (
         :race_no, :date, :state, :track, :meeting_id, :type, :description, :prize,
-        :condition, :class, :age, :sex, :distance_m, :bonus, :url
+        :condition, :class, :age, :sex, :distance_m, :bonus, :url, :race_time
     )
 """)
 
@@ -243,6 +249,7 @@ def _prep_params(r: Dict[str, Any]) -> Dict[str, Any]:
         "distance_m":  _coerce_int(r.get("distance_m")),
         "bonus":       _clean_str(r.get("bonus")),
         "url":         (_clean_str(r.get("url")) or ""),
+        "race_time":   _clean_str(r.get("race_time")),
     }
 
 # ---------------------- Public entrypoint ---------------------

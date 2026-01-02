@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS race_program (
     sex         TEXT,
     distance_m  INTEGER,
     bonus       TEXT,
-    url         TEXT
+    url         TEXT,
+    race_time   TEXT
 );
 """
 
@@ -50,7 +51,8 @@ CREATE TABLE IF NOT EXISTS race_program (
     sex         TEXT,
     distance_m  INTEGER,
     bonus       TEXT,
-    url         TEXT
+    url         TEXT,
+    race_time   TEXT
 );
 """
 
@@ -123,6 +125,22 @@ CREATE INDEX IF NOT EXISTS ix_ra_results_track
 ON ra_results (track);
 """
 
+# ---------------------------------------------------------------------------
+# Migration: Add race_time column to existing race_program table
+# ---------------------------------------------------------------------------
+
+ADD_RACE_TIME_COLUMN_SQL = """
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'race_program' AND column_name = 'race_time'
+    ) THEN
+        ALTER TABLE race_program ADD COLUMN race_time TEXT;
+    END IF;
+END $$;
+"""
+
 
 def main() -> int:
     url = os.getenv("DATABASE_URL")
@@ -142,6 +160,8 @@ def main() -> int:
             # race_program
             conn.execute(text(TABLE_SQL_POSTGRES))
             conn.execute(text(INDEX_SQL))
+            # Migration: add race_time column if missing
+            conn.execute(text(ADD_RACE_TIME_COLUMN_SQL))
 
             # ra_results
             conn.execute(text(RA_RESULTS_TABLE_SQL_POSTGRES))

@@ -43,6 +43,7 @@ class RaceProgram(Base):
     distance_m = Column(Integer, nullable=True)
     bonus = Column(Text, nullable=True)
     url = Column(Text, nullable=True, index=True)
+    race_time = Column(String, nullable=True)  # e.g. "1:20PM"
 
 
 class RAResult(Base):

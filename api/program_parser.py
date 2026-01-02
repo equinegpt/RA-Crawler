@@ -74,16 +74,17 @@ _RE_HEADER_FULL = re.compile(
 )
 
 def _iter_blocks(text: str):
-    """Yield (race_no:int, header_title:str, distance:int, block_text:str)."""
+    """Yield (race_no:int, header_title:str, distance:int, race_time:str|None, block_text:str)."""
     heads = list(_RE_HEADER_FULL.finditer(text))
     for i, h in enumerate(heads):
         race_no = int(h.group("num"))
         title_raw = h.group("title") or ""
         distance = _to_int(h.group("metres"))
+        race_time = (h.group("time") or "").strip() or None  # e.g. "1:20PM"
         start = h.end()
         end = heads[i+1].start() if i+1 < len(heads) else len(text)
         block = text[start:end].strip()
-        yield race_no, title_raw, distance, block
+        yield race_no, title_raw, distance, race_time, block
 
 # ---------- field regexes ----------
 _RE_PRIZE_OF    = re.compile(r"\bOf\s*\$?\s*([\d,]{3,})", re.I)
@@ -384,7 +385,7 @@ def parse_program(html: str, url: str) -> List[Dict]:
     text = _clean(html)
     rows: List[Dict] = []
 
-    for race_no, title_raw, distance, block in _iter_blocks(text):
+    for race_no, title_raw, distance, race_time, block in _iter_blocks(text):
         title = _normalize_title(title_raw)
 
         prize = _pick_prize_total(block)
@@ -409,6 +410,7 @@ def parse_program(html: str, url: str) -> List[Dict]:
             "distance": distance,
             "bonus": bonus,
             "url": url,
+            "race_time": race_time,  # e.g. "1:20PM" when available
         })
 
     rows = _postprocess_rows(rows, url, html)

@@ -228,7 +228,8 @@ def list_races() -> List[Dict[str, Any]]:
                     sex,
                     distance_m,
                     bonus,
-                    url
+                    url,
+                    race_time
                 FROM race_program
                 ORDER BY date, state, track, race_no, id
                 """
@@ -261,6 +262,7 @@ def list_races() -> List[Dict[str, Any]]:
                 "distance_m": r["distance_m"],
                 "bonus": r["bonus"],
                 "url": r["url"],
+                "raceTime": r["race_time"],  # e.g. "1:20PM" when available
             }
         )
 
