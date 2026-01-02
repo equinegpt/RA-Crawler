@@ -14,7 +14,8 @@ if [[ "${DATABASE_URL:-}" == sqlite:* ]]; then
     cp -f /opt/render/project/src/data/racing.db /data/racing.db
   fi
 else
-  echo "[daily.sh] non-sqlite DATABASE_URL → skipping /data seeding"
+  echo "[daily.sh] non-sqlite DATABASE_URL → running schema migrations"
+  python -m api.init_pg_schema || echo "[daily.sh] WARNING: schema migration failed, continuing anyway"
 fi
 
 python -m api.daily_job
