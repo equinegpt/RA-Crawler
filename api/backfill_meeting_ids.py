@@ -194,6 +194,11 @@ def canonical_track_name(raw: str) -> str:
         "beaumont newcastle": "newcastle",
         "beaumont": "newcastle",  # PF uses "Beaumont" alone
         "newcastle": "newcastle",
+
+        # Devonport Tapeta Synthetic vs Devonport Synthetic
+        # RA: "Devonport Tapeta Synthetic" → PF: "Devonport Synthetic"
+        "devonport tapeta synthetic": "devonport synthetic",
+        "devonport synthetic": "devonport synthetic",
     }
     # If we have an exact alias, use it
     if s in alias_map:
