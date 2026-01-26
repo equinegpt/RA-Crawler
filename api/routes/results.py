@@ -26,6 +26,8 @@ class ResultRow(BaseModel):
     race_no: int
     horse_number: int
     horse_name: str
+    trainer: str | None = None
+    jockey: str | None = None
     finishing_pos: int | None
     is_scratched: bool
     margin_lens: float | None = None
@@ -61,6 +63,8 @@ def list_results(
                 race_no=r.race_no,
                 horse_number=r.horse_number,
                 horse_name=r.horse_name,
+                trainer=r.trainer,
+                jockey=r.jockey,
                 finishing_pos=r.finishing_pos,
                 is_scratched=r.is_scratched,
                 margin_lens=float(r.margin_lens) if r.margin_lens is not None else None,

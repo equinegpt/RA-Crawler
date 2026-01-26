@@ -246,6 +246,14 @@ class RAResultsCrawler:
 
                 horse_name = horse_raw or f"Horse {horse_number}"
 
+                # Trainer (column 4) and Jockey (column 5)
+                trainer: Optional[str] = None
+                jockey: Optional[str] = None
+                if len(cells) > 4:
+                    trainer = cells[4].get_text(strip=True) or None
+                if len(cells) > 5:
+                    jockey = cells[5].get_text(strip=True) or None
+
                 # Finishing position: only for starters
                 finishing_pos: Optional[int] = None
                 if not is_scratched:
@@ -281,6 +289,8 @@ class RAResultsCrawler:
                     race_no=race_no,
                     horse_number=horse_number,
                     horse_name=horse_name,
+                    trainer=trainer,
+                    jockey=jockey,
                     finishing_pos=finishing_pos,
                     is_scratched=is_scratched,
                     margin_lens=margin_lens,
@@ -309,6 +319,8 @@ class RAResultsCrawler:
 
         if existing:
             existing.horse_name = rr.horse_name
+            existing.trainer = rr.trainer
+            existing.jockey = rr.jockey
             existing.finishing_pos = rr.finishing_pos
             existing.is_scratched = rr.is_scratched
             existing.margin_lens = rr.margin_lens

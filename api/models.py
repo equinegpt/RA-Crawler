@@ -58,6 +58,8 @@ class RAResult(Base):
     race_no = Column(Integer, nullable=False)               # 1..10
     horse_number = Column(Integer, nullable=False)          # TAB/saddle number
     horse_name = Column(String, nullable=False)
+    trainer = Column(String, nullable=True)
+    jockey = Column(String, nullable=True)
 
     finishing_pos = Column(Integer, nullable=True)          # 1,2,3,...; None if scratched
     is_scratched = Column(Boolean, nullable=False, server_default="false")

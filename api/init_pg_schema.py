@@ -76,6 +76,8 @@ CREATE TABLE IF NOT EXISTS ra_results (
     race_no        INTEGER NOT NULL,
     horse_number   INTEGER NOT NULL,
     horse_name     TEXT    NOT NULL,
+    trainer        TEXT,
+    jockey         TEXT,
     finishing_pos  INTEGER,
     is_scratched   BOOLEAN NOT NULL DEFAULT FALSE,
     margin_lens    NUMERIC(5,2),
@@ -94,6 +96,8 @@ CREATE TABLE IF NOT EXISTS ra_results (
     race_no        INTEGER NOT NULL,
     horse_number   INTEGER NOT NULL,
     horse_name     TEXT    NOT NULL,
+    trainer        TEXT,
+    jockey         TEXT,
     finishing_pos  INTEGER,
     is_scratched   INTEGER NOT NULL DEFAULT 0,
     margin_lens    REAL,
@@ -141,6 +145,28 @@ BEGIN
 END $$;
 """
 
+# ---------------------------------------------------------------------------
+# Migration: Add trainer and jockey columns to existing ra_results table
+# ---------------------------------------------------------------------------
+
+ADD_TRAINER_JOCKEY_COLUMNS_SQL = """
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'ra_results' AND column_name = 'trainer'
+    ) THEN
+        ALTER TABLE ra_results ADD COLUMN trainer TEXT;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'ra_results' AND column_name = 'jockey'
+    ) THEN
+        ALTER TABLE ra_results ADD COLUMN jockey TEXT;
+    END IF;
+END $$;
+"""
+
 
 def main() -> int:
     url = os.getenv("DATABASE_URL")
@@ -169,6 +195,8 @@ def main() -> int:
             conn.execute(text(RA_RESULTS_INDEX_MEETING_DATE_SQL))
             conn.execute(text(RA_RESULTS_INDEX_STATE_SQL))
             conn.execute(text(RA_RESULTS_INDEX_TRACK_SQL))
+            # Migration: add trainer/jockey columns if missing
+            conn.execute(text(ADD_TRAINER_JOCKEY_COLUMNS_SQL))
 
         elif dialect == "sqlite":
             # race_program
