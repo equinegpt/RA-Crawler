@@ -151,6 +151,8 @@ def list_results(
             race_no,
             horse_number,
             horse_name,
+            trainer,
+            jockey,
             finishing_pos,
             is_scratched,
             margin_lens,
@@ -199,6 +201,8 @@ def list_results(
                 "race_no": d["race_no"],
                 "horse_number": d["horse_number"],
                 "horse_name": d["horse_name"],
+                "trainer": d.get("trainer"),
+                "jockey": d.get("jockey"),
                 "finishing_pos": d.get("finishing_pos"),
                 "is_scratched": bool(d.get("is_scratched")),
                 "margin_lens": float(margin_lens) if margin_lens is not None else None,
@@ -207,6 +211,31 @@ def list_results(
         )
 
     return out
+
+
+@app.post("/results/refresh")
+def refresh_results(
+    meeting_date: str = Query(..., alias="date", description="Meeting date (YYYY-MM-DD)"),
+):
+    """
+    Re-crawl RA results for a specific date to update trainer/jockey data.
+    """
+    from .ra_results_crawler import RAResultsCrawler
+
+    try:
+        target_date = date.fromisoformat(meeting_date)
+    except ValueError:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+
+    crawler = RAResultsCrawler()
+    try:
+        crawler.fetch_for_date(target_date)
+    except Exception as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=f"results crawl failed: {exc}")
+
+    return {"ok": True, "date": meeting_date}
 
 
 # Optional local run:
