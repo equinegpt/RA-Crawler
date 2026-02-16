@@ -204,6 +204,12 @@ def canonical_track_name(raw: str) -> str:
         # RA: "Kensington" → PF: "Randwick-Kensington"
         "kensington": "randwick kensington",
         "randwick kensington": "randwick kensington",
+
+        # Cannon Park vs Cairns
+        # RA: "Ladbrokes Cannon Park" → PF: "Cairns"
+        "cannon": "cairns",
+        "cannon park": "cairns",
+        "cairns": "cairns",
     }
     # If we have an exact alias, use it
     if s in alias_map:
