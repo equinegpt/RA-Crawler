@@ -69,18 +69,33 @@ def _resolve_engine(url_arg: Optional[str]) -> Engine:
     return create_engine(default_sqlite, future=True)
 
 
+def _is_postgres(conn) -> bool:
+    return conn.engine.dialect.name == "postgresql"
+
+
 def _has_table(conn, name: str) -> bool:
-    row = conn.execute(
-        text("SELECT name FROM sqlite_master WHERE type='table' AND name=:n"),
-        {"n": name},
-    ).fetchone()
+    if _is_postgres(conn):
+        row = conn.execute(
+            text("SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename=:n"),
+            {"n": name},
+        ).fetchone()
+    else:
+        row = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name=:n"),
+            {"n": name},
+        ).fetchone()
     return bool(row)
 
 
 def _list_tables(conn):
-    rows = conn.execute(
-        text("SELECT name FROM sqlite_master WHERE type='table' ORDER BY 1")
-    ).fetchall()
+    if _is_postgres(conn):
+        rows = conn.execute(
+            text("SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY 1")
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' ORDER BY 1")
+        ).fetchall()
     return [r[0] for r in rows]
 
 
@@ -244,11 +259,13 @@ def _upsert_row(conn, row: dict) -> int:
             (race_no, date, state, track, description, prize, condition, class, age, sex, distance_m, bonus, url)
             VALUES
             (:race_no, :date, :state, :track, :description, :prize, :condition, :class, :age, :sex, :distance_m, :bonus, :url)
+            RETURNING id
             """
             ),
             row,
         )
-        return int(res.lastrowid)
+        inserted = res.fetchone()
+        return int(inserted[0]) if inserted else 0
 
 def _harvest_rows_direct(meeting_key: str) -> List[Dict[str, Any]]:
     """
