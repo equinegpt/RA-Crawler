@@ -12,11 +12,7 @@ import requests
 from sqlalchemy import create_engine, text
 
 from .track_types import infer_type
-
-REQ_TIMEOUT = 20
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; RA-Crawler/1.0; +https://example.com)",
-}
+from .scraper_proxy import scraper_get
 
 MEETING_TYPE_RE = re.compile(r"Meeting Type:\s*(Metro|Metropolitan|Provincial|Country)", re.I)
 
@@ -26,7 +22,7 @@ def db_engine(url: Optional[str] = None):
     return eng
 
 def fetch(url: str) -> str:
-    r = requests.get(url, headers=HEADERS, timeout=REQ_TIMEOUT)
+    r = scraper_get(url, timeout=30)
     r.raise_for_status()
     return r.text
 

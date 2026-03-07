@@ -19,6 +19,7 @@ from urllib.parse import unquote_plus
 import requests
 
 from .program_parser import parse_program  # existing parser the project already uses
+from .scraper_proxy import scraper_get
 
 # ---------------------------- HTTP CONFIG ------------------------------------
 
@@ -122,19 +123,14 @@ def _url_from_key_or_url(url_or_key: str) -> str:
 
 def _fetch_html(url: str, *, force: bool = False, referer: Optional[str] = None) -> str:
     """
-    One-shot GET with short timeouts + no-cache headers. If force=True, add a
-    cache-buster query parameter so we don’t get stale or cached responses.
+    Fetch via ScraperAPI proxy. If force=True, add a cache-buster query parameter.
     """
-    headers = dict(_DEFAULT_HEADERS)
-    if referer:
-        headers["Referer"] = referer
-
     u = url
     if force:
         ts = int(datetime.utcnow().timestamp())
-        u = f"{url}{'&' if '?' in url else '?'}_ts={ts}"
+        u = f"{url}{‘&’ if ‘?’ in url else ‘?’}_ts={ts}"
 
-    r = _SESS.get(u, headers=headers, timeout=REQ_TIMEOUT)
+    r = scraper_get(u, timeout=30, session=_SESS)
     r.raise_for_status()
     return r.text
 

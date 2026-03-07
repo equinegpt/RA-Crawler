@@ -10,24 +10,19 @@ from typing import Dict, List, Optional, Tuple
 import requests
 from sqlalchemy import create_engine, text
 
-REQ_TIMEOUT = 30
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; RA-Crawler/1.0)",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-}
+from .scraper_proxy import scraper_get
 
 # Example line on Program page:
 #   Race 6 - 4:35PM BUDGET CAR AND TRUCK RENTAL HANDICAP (1400 METRES)
-# We'll extract both race number and distance from near that text.
+# We’ll extract both race number and distance from near that text.
 RE_RACE_LINE = re.compile(
     r"Race\s*(\d{1,2})\b.*?\(\s*([0-9][0-9,]{2,4})\s*(?:M|METRE|METRES|METERS)\s*\)",
     re.IGNORECASE | re.DOTALL,
 )
 
 def fetch(url: str) -> str:
-    r = requests.get(url, headers=HEADERS, timeout=REQ_TIMEOUT)
+    r = scraper_get(url, timeout=30)
     r.raise_for_status()
-    # Don’t slice: keep full HTML so we don’t miss late-page headers
     return r.text
 
 def parse_race_distances_from_program(html: str) -> Dict[int, int]:

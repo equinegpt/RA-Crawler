@@ -19,13 +19,7 @@ from typing import Dict, List, Optional, Tuple
 import requests
 from sqlalchemy import create_engine, text
 
-# -------- HTTP config --------
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; grade-promoter/1.0)",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-AU,en;q=0.9",
-}
-TIMEOUT = 15
+from .scraper_proxy import scraper_get
 
 # -------- Patterns --------
 RE_GROUP = re.compile(r"\bGROUP\s*([123])\b", re.IGNORECASE)
@@ -37,10 +31,7 @@ def get_db_url() -> str:
 
 
 def fetch(url: str, referer: Optional[str] = None) -> str:
-    headers = dict(HEADERS)
-    if referer:
-        headers["Referer"] = referer
-    r = requests.get(url, headers=headers, timeout=TIMEOUT)
+    r = scraper_get(url, timeout=30)
     r.raise_for_status()
     return r.text
 

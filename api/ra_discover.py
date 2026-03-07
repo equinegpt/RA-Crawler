@@ -21,6 +21,8 @@ import requests
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 
+from .scraper_proxy import scraper_get
+
 # ============================ Networking config ==============================
 
 REQ_CONNECT_TIMEOUT = float(os.environ.get("RA_REQ_CONNECT_TIMEOUT", "6.0"))
@@ -95,27 +97,16 @@ def _make_session() -> requests.Session:
 
 def _fetch(sess: requests.Session, url: str, referer: str = None) -> str:
     """
-    GET a page with strict timeouts and graceful failure.
+    GET a page via ScraperAPI proxy with graceful failure.
 
     IMPORTANT: Keep the name/signature so callers (like _walk_listing) don't change.
     On any network error/timeout, return None so the walker can skip/stop instead of hanging.
     """
-    headers = {}
-    if referer:
-        headers["Referer"] = referer
-
     try:
-        r = sess.get(
-            url,
-            headers=headers,
-            timeout=REQ_TIMEOUT,          # (connect_timeout, read_timeout)
-            allow_redirects=True,
-        )
-        # If server returns a transient error, Retry handles it automatically.
+        r = scraper_get(url, timeout=30, session=sess)
         r.raise_for_status()
         return r.text
     except requests.exceptions.RequestException as e:
-        # Optional: respect your RA_DISCOVER_VERBOSE logging if present.
         try:
             if os.getenv("RA_DISCOVER_VERBOSE"):
                 print(f"  [get] {url} -> {type(e).__name__}: {e}; skip")
@@ -200,11 +191,8 @@ def _make_session() -> requests.Session:
     return s
 
 def _fetch(sess: requests.Session, url: str, referer: Optional[str] = None) -> str:
-    headers = {}
-    if referer:
-        headers["Referer"] = referer
     try:
-        r = sess.get(url, headers=headers, timeout=REQ_TIMEOUT)
+        r = scraper_get(url, timeout=30, session=sess)
         r.raise_for_status()
         return r.text
     except requests.RequestException as e:

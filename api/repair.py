@@ -278,9 +278,10 @@ def _harvest_rows_direct(meeting_key: str) -> List[Dict[str, Any]]:
         print("[repair] ERROR: cannot import api.program_parser.parse_program", file=sys.stderr)
         return []
 
+    from .scraper_proxy import scraper_get
     base = "https://www.racingaustralia.horse/FreeFields/RaceProgram.aspx?Key="
     url = base + meeting_key
-    resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+    resp = scraper_get(url, timeout=30)
     resp.raise_for_status()
     html_text = resp.text
 

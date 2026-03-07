@@ -7,6 +7,8 @@ from typing import Iterable, Mapping, Any, List, Optional
 import re
 import requests
 from bs4 import BeautifulSoup
+
+from .scraper_proxy import scraper_get
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -101,7 +103,7 @@ class RAResultsCrawler:
 
         print(f"[RAResultsCrawler] Fetching results from {url}")
 
-        resp = requests.get(url, timeout=30)
+        resp = scraper_get(url, timeout=30)
         resp.raise_for_status()
         html = resp.text
 
