@@ -16,9 +16,7 @@ import os
 
 import requests
 
-SCRAPER_API_KEY = os.getenv(
-    "SCRAPER_API_KEY", "a7c9bc7a9308c38391a5f4f7998df73d"
-)
+SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "")
 SCRAPER_API_URL = "http://api.scraperapi.com"
 
 
