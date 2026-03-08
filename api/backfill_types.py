@@ -78,7 +78,7 @@ def backfill(url: Optional[str], dry_run: bool = False, limit: Optional[int] = N
     for i, (date, state, track, any_url) in enumerate(meetings, start=1):
         # 1) Try table lookup first (fast)
         t = infer_type(state, track)
-        # 2) If missing, try parsing the Program page heading (“Meeting Type:”)
+        # 2) If missing, try parsing the Program page heading ("Meeting Type:")
         if not t:
             try:
                 html = fetch(any_url)

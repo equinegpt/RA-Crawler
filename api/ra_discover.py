@@ -29,9 +29,9 @@ REQ_CONNECT_TIMEOUT = float(os.environ.get("RA_REQ_CONNECT_TIMEOUT", "6.0"))
 REQ_READ_TIMEOUT    = float(os.environ.get("RA_REQ_READ_TIMEOUT", "12.0"))
 REQ_TIMEOUT         = (REQ_CONNECT_TIMEOUT, REQ_READ_TIMEOUT)
 
-# Per-listing “walk” deadline (avoid hangs)
+# Per-listing "walk" deadline (avoid hangs)
 WALK_DEADLINE_SECS  = float(os.environ.get("RA_WALK_DEADLINE_SECS", "75"))
-# Stop if we see this many consecutive “no date advance” pages
+# Stop if we see this many consecutive "no date advance" pages
 MAX_STAGNANT_STEPS  = int(os.environ.get("RA_MAX_STAGNANT_STEPS", "2"))
 
 VERBOSE = bool(os.environ.get("RA_DISCOVER_VERBOSE"))
@@ -122,7 +122,7 @@ _RE_ANY_PROGRAM_URL = re.compile(
     r'(?i)RaceProgram\.aspx\?[^<>"\'\s]*\bKey=([^&<>"\'\s]+)'
 )
 
-# Query param “Key” inside any URL
+# Query param "Key" inside any URL
 _RE_QUERY_KEY = re.compile(r'(?:^|[?&])Key=([^&]+)', re.I)
 
 # Tuple patterns for fallback extraction (when link URL is not present)

@@ -39,7 +39,7 @@ _DEFAULT_HEADERS = {
     "Cache-Control": "no-cache",
 }
 
-# We’ll try to use urllib3’s Retry via requests if available; fall back gracefully if not.
+# We'll try to use urllib3's Retry via requests if available; fall back gracefully if not.
 _Retry = None
 _HTTPAdapter = None
 try:
@@ -128,7 +128,7 @@ def _fetch_html(url: str, *, force: bool = False, referer: Optional[str] = None)
     u = url
     if force:
         ts = int(datetime.utcnow().timestamp())
-        u = f"{url}{‘&’ if ‘?’ in url else ‘?’}_ts={ts}"
+        u = f"{url}{'&' if '?' in url else '?'}_ts={ts}"
 
     r = scraper_get(u, timeout=30, session=_SESS)
     r.raise_for_status()
@@ -146,14 +146,14 @@ _BM_RE      = re.compile(r"\bBM\s?(\d{2})\b", re.I)
 _RATINGS_RE = re.compile(r"\bRATINGS?\s*(?:BAND\s*)?(\d{1,2})\s*[-–]\s*(\d{1,2})\b", re.I)
 _RTG_RE     = re.compile(r"\bRTG\s?(\d{2})(\+?)\b", re.I)
 
-# Signals that *aren’t* class (avoid false positives)
-# e.g. “Open Handicap” often means “no class restriction, Hcp” — do not set class from “Open”
+# Signals that *aren't* class (avoid false positives)
+# e.g. "Open Handicap" often means "no class restriction, Hcp" — do not set class from "Open"
 _OPEN_WORD  = re.compile(r"\bOPEN\b", re.I)
 
 
 def _infer_class_from_text(text: str) -> Optional[str]:
     """
-    Infer a grading/class label from a single row’s text (description + bonus).
+    Infer a grading/class label from a single row's text (description + bonus).
     Returns None if nothing conclusive is found.
     """
     t = (text or "").strip()
@@ -167,7 +167,7 @@ def _infer_class_from_text(text: str) -> Optional[str]:
     if _LISTED_RE.search(t):
         return "Listed"
 
-    # Maiden before BM/ratings—some titles include both “Maiden Handicap”
+    # Maiden before BM/ratings—some titles include both "Maiden Handicap"
     if _MAIDEN_RE.search(t):
         return "Maiden"
 
@@ -183,7 +183,7 @@ def _infer_class_from_text(text: str) -> Optional[str]:
     m = _RATINGS_RE.search(t)
     if m:
         lo, hi = m.group(1), m.group(2)
-        # Emit exactly like “0-55” so downstream filters can map to min/max easily.
+        # Emit exactly like "0-55" so downstream filters can map to min/max easily.
         return f"{lo}-{hi}"
 
     # WA RTG 66+ -> treat as BM66(+)
@@ -192,7 +192,7 @@ def _infer_class_from_text(text: str) -> Optional[str]:
         num, plus = m.group(1), m.group(2)
         return f"BM{num}{'+' if plus else ''}"
 
-    # Explicit “Open” appears often but is *not* a class restriction; skip emitting “Open”
+    # Explicit "Open" appears often but is *not* a class restriction; skip emitting "Open"
     if _OPEN_WORD.search(t):
         return None
 
@@ -214,7 +214,7 @@ def _normalize_rows(rows: List[Dict[str, Any]], url_or_key: str, *, debug: bool 
     """
     Safe normalization:
     - Backfill missing `date` from Key
-    - Infer `class` from this row’s text only (no global/page bleed)
+    - Infer `class` from this row's text only (no global/page bleed)
     - Leave all other fields as produced by the parser
     """
     iso_date = _date_from_key(url_or_key)
@@ -229,11 +229,11 @@ def _normalize_rows(rows: List[Dict[str, Any]], url_or_key: str, *, debug: bool 
         row["description"] = desc or row.get("description")
         row["bonus"] = bonus or row.get("bonus")
 
-        # If parser didn’t populate date, fill from Key
+        # If parser didn't populate date, fill from Key
         if not row.get("date"):
             row["date"] = iso_date
 
-        # Class: only look at this row’s own text (desc+bonus)
+        # Class: only look at this row's own text (desc+bonus)
         have = _s(row.get("class"))
         if not have or have.lower() in {"open", "no restrictions", "no class restriction"}:
             inferred = _infer_class_from_text(f"{desc} {bonus}".strip())

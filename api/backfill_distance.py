@@ -14,7 +14,7 @@ from .scraper_proxy import scraper_get
 
 # Example line on Program page:
 #   Race 6 - 4:35PM BUDGET CAR AND TRUCK RENTAL HANDICAP (1400 METRES)
-# We’ll extract both race number and distance from near that text.
+# We'll extract both race number and distance from near that text.
 RE_RACE_LINE = re.compile(
     r"Race\s*(\d{1,2})\b.*?\(\s*([0-9][0-9,]{2,4})\s*(?:M|METRE|METRES|METERS)\s*\)",
     re.IGNORECASE | re.DOTALL,
@@ -36,7 +36,7 @@ def parse_race_distances_from_program(html: str) -> Dict[int, int]:
             race_no = int(race_no_str)
             dist = int(dist_str.replace(",", ""))
             if 600 <= dist <= 7000:  # sanity
-                # Don’t overwrite if already seen; first match per race is fine
+                # Don't overwrite if already seen; first match per race is fine
                 out.setdefault(race_no, dist)
         except Exception:
             continue

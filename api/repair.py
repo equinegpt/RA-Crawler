@@ -406,7 +406,7 @@ def resync_meeting_by_key(
 def main() -> None:
     p = argparse.ArgumentParser(description="Repair tools for race_program data.")
     p.add_argument("--url", help="SQLAlchemy DB URL (overrides env/DATABASE_URL).")
-    p.add_argument("--dry-run", action="store_true", help="Print actions, don’t modify DB.")
+    p.add_argument("--dry-run", action="store_true", help="Print actions, don't modify DB.")
 
     # Actions:
     p.add_argument(
