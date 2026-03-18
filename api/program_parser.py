@@ -153,14 +153,13 @@ def _parse_key_meta_from_url(url: str):
 
 def _derive_bm_or_class_from_text(txt: str):
     """
-    Returns normalized class string like 'BM66+', 'BM71', or 'CL3' if present in text.
-    Priority:
-      Base Rating N -> BMN
-      RTG N[+]      -> BMN[+]
-      BM/Benchmark  -> BMN[+]
-      Class N       -> CLN
+    Returns normalized class string from text.
+    Priority: Maiden > BM/RTG > Class N
+    (Maiden trumps BM because a Maiden race may appear near BM text from adjacent races)
     """
     t = (txt or "").strip()
+    if _RE_MAIDEN.search(t):
+        return "Maiden"
     m = _RE_BASE_RATING.search(t)
     if m: return f"BM{m.group(1)}"
     m = _RE_RTG.search(t)
@@ -186,25 +185,29 @@ def _derive_class_near_race(html: str, race_no: int):
 def _postprocess_rows(rows, url: str, html: str):
     """
     Adjust rows by:
-      - filling class (BM/CL) from description or nearby HTML
+      - filling class (BM/CL) from description or nearby HTML when primary parser returned None
       - filling date/state/track from ?Key=... when missing
     """
     for r in rows:
-        # derive class from description first
-        desc = r.get("description") or ""
-        derived = _derive_bm_or_class_from_text(desc)
+        # Only attempt to derive class if the primary parser didn't find one
+        if r.get("class") is not None:
+            pass  # trust _pick_class result — don't override
+        else:
+            # derive class from description first
+            desc = r.get("description") or ""
+            derived = _derive_bm_or_class_from_text(desc)
 
-        # if still not found, try to scan near the race block in html
-        if not derived:
-            rn = r.get("race_no")
-            try:
-                rn = int(rn) if rn is not None else None
-            except Exception:
-                rn = None
-            if rn:
-                derived = _derive_class_near_race(html, rn)
-        if derived:
-            r["class"] = derived
+            # if still not found, try to scan near the race block in html
+            if not derived:
+                rn = r.get("race_no")
+                try:
+                    rn = int(rn) if rn is not None else None
+                except Exception:
+                    rn = None
+                if rn:
+                    derived = _derive_class_near_race(html, rn)
+            if derived:
+                r["class"] = derived
 
         # meta fallback from Key
         if not (r.get("date") and r.get("state") and r.get("track")):
@@ -235,15 +238,23 @@ def _pick_class(block: str, title: str) -> Optional[str]:
     mg = _RE_GROUP.search(block)
     if mg: return "G" + mg.group(1)
     if _RE_LISTED.search(block): return "Listed"
+    # Maiden before BM — check both conditions block and title
+    if _RE_MAIDEN.search(block) or _RE_MAIDEN.search(title):
+        return "Maiden"
     d = title.upper()
     m = _RE_BM.search(d) or _RE_BENCHMARK.search(d)
     if m: return f"BM{m.group(1)}"
-    if _RE_MAIDEN.search(d): return "Maiden"
     m = _RE_CLASSN.search(d)
     if m: return f"CL{m.group(1)}"
     if " OPEN " in f" {d} " or _RE_NOCLASS.search(block):
         return "Open"
     return None
+
+_RE_AGE_WORD_AND = re.compile(
+    r"\b(One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten|Eleven|Twelve)\s*(?:-|\s)*Years?\s*(?:-|\s)*Old\s*"
+    r"(?:and|&)\s*(One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten|Eleven|Twelve)\s*(?:-|\s)*Years?\s*(?:-|\s)*Old\b",
+    re.I
+)
 
 def _age_from_block(block: str) -> Optional[str]:
     if _RE_NO_AGE.search(block):
@@ -258,6 +269,13 @@ def _age_from_block(block: str) -> Optional[str]:
     if m:
         num = _WORD_NUM.get(m.group(1).upper())
         return f"{num}+" if num else None
+    # "Three-Years-Old and Four-Years-Old" → "3-4"
+    m = _RE_AGE_WORD_AND.search(block)
+    if m:
+        lo = _WORD_NUM.get(m.group(1).upper())
+        hi = _WORD_NUM.get(m.group(2).upper())
+        if lo and hi:
+            return f"{lo}-{hi}"
     m = _RE_AGE_WORD.search(block)
     if m:
         return _WORD_NUM.get(m.group(1).upper())
