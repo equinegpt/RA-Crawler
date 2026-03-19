@@ -154,12 +154,13 @@ def _parse_key_meta_from_url(url: str):
 def _derive_bm_or_class_from_text(txt: str):
     """
     Returns normalized class string from text.
-    Priority: Maiden > BM/RTG > Class N
-    (Maiden trumps BM because a Maiden race may appear near BM text from adjacent races)
+    Priority: BM/RTG > Class N
+    NOTE: Maiden is NOT checked here because this function is used with the
+    2000-char window fallback (_derive_class_near_race) which bleeds across
+    race blocks. Maiden detection is handled in _pick_class using properly
+    split blocks instead.
     """
     t = (txt or "").strip()
-    if _RE_MAIDEN.search(t):
-        return "Maiden"
     m = _RE_BASE_RATING.search(t)
     if m: return f"BM{m.group(1)}"
     m = _RE_RTG.search(t)
