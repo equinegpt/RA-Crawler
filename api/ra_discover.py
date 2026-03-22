@@ -30,9 +30,9 @@ REQ_READ_TIMEOUT    = float(os.environ.get("RA_REQ_READ_TIMEOUT", "12.0"))
 REQ_TIMEOUT         = (REQ_CONNECT_TIMEOUT, REQ_READ_TIMEOUT)
 
 # Per-listing "walk" deadline (avoid hangs)
-WALK_DEADLINE_SECS  = float(os.environ.get("RA_WALK_DEADLINE_SECS", "75"))
+WALK_DEADLINE_SECS  = float(os.environ.get("RA_WALK_DEADLINE_SECS", "30"))
 # Stop if we see this many consecutive "no date advance" pages
-MAX_STAGNANT_STEPS  = int(os.environ.get("RA_MAX_STAGNANT_STEPS", "2"))
+MAX_STAGNANT_STEPS  = int(os.environ.get("RA_MAX_STAGNANT_STEPS", "1"))
 
 VERBOSE = bool(os.environ.get("RA_DISCOVER_VERBOSE"))
 
@@ -360,22 +360,15 @@ def _date_variants(dt: date) -> Dict[str, str]:
     }
 
 def _compute_next_candidates(base_url: str, next_date: date) -> List[str]:
+    # Minimise ScraperAPI requests: only try the param formats RA actually uses
     v = _date_variants(next_date)
     candidates = []
-    param_names = [
-        "d","date","Date","week","Week",
-        "fromDate","FromDate","startDate","StartDate",
-        "DateFrom","dateFrom","FromDateString","dateString",
-        "Key"
-    ]
-    for pn in param_names:
+    for pn in ["date", "Date", "Key"]:
         if pn.lower() == "key":
             candidates.append(_add_or_replace_query(base_url, **{pn: v["yyyymondd"]}))
         else:
             candidates.append(_add_or_replace_query(base_url, **{pn: v["ddmmyyyy"]}))
             candidates.append(_add_or_replace_query(base_url, **{pn: v["yyyymmdd"]}))
-            candidates.append(_add_or_replace_query(base_url, **{pn: v["ddMonyyyy"]}))
-            candidates.append(_add_or_replace_query(base_url, **{pn: v["ddPlusMonyyyy"]}))
     # dedupe preserving order
     seen, uniq = set(), []
     for u in candidates:
@@ -506,11 +499,11 @@ def discover_meeting_keys(days: int, include_past: int = 0, debug: bool = False)
     total: Set[str] = set()
 
     # 1) HOME
-    total |= _walk_listing(HOME_URL, start_date, end_date, max_hops=40)
+    total |= _walk_listing(HOME_URL, start_date, end_date, max_hops=6)
 
     # 2) Each state
     for s_url in STATE_URLS:
-        total |= _walk_listing(s_url, start_date, end_date, max_hops=40)
+        total |= _walk_listing(s_url, start_date, end_date, max_hops=6)
 
     if VERBOSE:
         by_day: Dict[str, int] = {}
