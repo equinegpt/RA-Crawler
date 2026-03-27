@@ -213,6 +213,31 @@ def list_results(
     return out
 
 
+@app.post("/backfill-meetings")
+def backfill_meetings():
+    """
+    Trigger a meeting_id backfill from Punting Form (same logic as the cron job).
+    """
+    from .backfill_meeting_ids import backfill as _backfill_meeting_ids
+
+    eng = get_engine()
+    url = str(eng.url)
+
+    try:
+        meetings_updated, rows_updated = _backfill_meeting_ids(
+            url, dry_run=False, limit=None,
+        )
+    except Exception as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=f"backfill failed: {exc}")
+
+    return {
+        "ok": True,
+        "meetings_updated": meetings_updated,
+        "rows_updated": rows_updated,
+    }
+
+
 @app.post("/results/refresh")
 def refresh_results(
     meeting_date: str = Query(..., alias="date", description="Meeting date (YYYY-MM-DD)"),
