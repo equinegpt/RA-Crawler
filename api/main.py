@@ -218,10 +218,10 @@ def backfill_meetings():
     """
     Trigger a meeting_id backfill from Punting Form (same logic as the cron job).
     """
+    import os
     from .backfill_meeting_ids import backfill as _backfill_meeting_ids
 
-    eng = get_engine()
-    url = str(eng.url)
+    url = os.getenv("DATABASE_URL", "sqlite:////data/racing.db")
 
     try:
         meetings_updated, rows_updated = _backfill_meeting_ids(
