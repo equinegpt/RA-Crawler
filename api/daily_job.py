@@ -136,7 +136,9 @@ def run_daily(
             )
             print(f"[daily] backfill_meeting_ids: meetings_updated={meetings_updated}, rows_updated={rows_updated}")
         except Exception as e:
-            print(f"[daily] backfill_meeting_ids skipped (error: {e})", file=sys.stderr)
+            import traceback
+            print(f"[daily] backfill_meeting_ids FAILED: {e}")
+            traceback.print_exc()
     else:
         print("[daily] backfill_meeting_ids not available (module missing)")
 

@@ -203,7 +203,7 @@ def _clean_str(v: Any) -> Optional[str]:
 UPDATE_SQL = text("""
     UPDATE race_program
     SET
-        meeting_id  = :meeting_id,
+        meeting_id  = COALESCE(:meeting_id, meeting_id),
         type        = :type,
         description = :description,
         prize       = :prize,
