@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+from typing import Optional
+
 # -------- Aliases -> Canonical track name (UPPERCASE) ----------
 _ALIAS_EQUIV = {
     # VIC
@@ -148,3 +151,23 @@ def infer_type(state: str, track: str) -> str | None:
     s = (state or "").strip().upper()
     t = canonical_track(s, track)
     return TRACK_GRADE.get((s, t))
+
+
+_MEETING_TYPE_RE = re.compile(
+    r"Meeting Type:\s*(Metro|Metropolitan|Provincial|Country)", re.I
+)
+
+
+def parse_meeting_type_from_html(html: str) -> Optional[str]:
+    """Extract M/P/C from the 'Meeting Type:' label on an RA program page."""
+    m = _MEETING_TYPE_RE.search(html)
+    if not m:
+        return None
+    word = m.group(1).lower()
+    if word.startswith("metro"):
+        return "M"
+    if word.startswith("prov"):
+        return "P"
+    if word.startswith("country"):
+        return "C"
+    return None

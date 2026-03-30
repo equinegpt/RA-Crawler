@@ -11,10 +11,9 @@ from typing import Optional
 import requests
 from sqlalchemy import create_engine, text
 
-from .track_types import infer_type
+from .track_types import infer_type, parse_meeting_type_from_html
 from .scraper_proxy import scraper_get
 
-MEETING_TYPE_RE = re.compile(r"Meeting Type:\s*(Metro|Metropolitan|Provincial|Country)", re.I)
 
 def db_engine(url: Optional[str] = None):
     url = url or os.getenv("DATABASE_URL", "sqlite:///./racing.db")
@@ -25,23 +24,6 @@ def fetch(url: str) -> str:
     r = scraper_get(url, timeout=30)
     r.raise_for_status()
     return r.text
-
-def parse_meeting_type_from_html(html: str) -> Optional[str]:
-    """
-    Returns 'M' | 'P' | 'C' if a Meeting Type header is found, else None.
-    """
-    # Cheap text search (fast, robust against small markup changes)
-    m = MEETING_TYPE_RE.search(html)
-    if not m:
-        return None
-    word = m.group(1).lower()
-    if word.startswith("metro"):
-        return "M"
-    if word.startswith("prov"):
-        return "P"
-    if word.startswith("country"):
-        return "C"
-    return None
 
 def normalize_type_letter(word: str) -> Optional[str]:
     if not word:

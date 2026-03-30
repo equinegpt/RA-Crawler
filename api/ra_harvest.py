@@ -20,6 +20,7 @@ import requests
 
 from .program_parser import parse_program  # existing parser the project already uses
 from .scraper_proxy import scraper_get
+from .track_types import infer_type, parse_meeting_type_from_html
 
 # ---------------------------- HTTP CONFIG ------------------------------------
 
@@ -249,6 +250,26 @@ def _normalize_rows(rows: List[Dict[str, Any]], url_or_key: str, *, debug: bool 
     return out
 
 
+# ----------------------------- TYPE RESOLUTION --------------------------------
+
+def _resolve_meeting_type(url_or_key: str, html: str) -> Optional[str]:
+    """
+    Determine M/P/C for a meeting. Tries the fast lookup table first,
+    then falls back to parsing the 'Meeting Type:' label from the HTML.
+    """
+    key = _extract_key(url_or_key)
+    if key:
+        parts = key.split(",", 2)
+        if len(parts) >= 3:
+            state = parts[1].strip()
+            track = parts[2].strip()
+            t = infer_type(state, track)
+            if t:
+                return t
+    # Fallback: parse from the page HTML (already in memory, no extra fetch)
+    return parse_meeting_type_from_html(html)
+
+
 # ----------------------------- PUBLIC API ------------------------------------
 
 def harvest_program(url_or_key: str, *, force: bool = False, debug: bool = False) -> List[Dict[str, Any]]:
@@ -273,7 +294,16 @@ def harvest_program(url_or_key: str, *, force: bool = False, debug: bool = False
     html = _fetch_html(url, force=force)
     # parse_program(html, url) MUST be idempotent and not rely on global state
     rows = parse_program(html, url)
-    return _normalize_rows(rows, url_or_key, debug=debug)
+    rows = _normalize_rows(rows, url_or_key, debug=debug)
+
+    # Determine meeting type (M/P/C) from the HTML we already have
+    meeting_type = _resolve_meeting_type(url_or_key, html)
+    if meeting_type:
+        for r in rows:
+            if not r.get("type"):
+                r["type"] = meeting_type
+
+    return rows
 
 
 def harvest_program_from_key(key: str, *, force: bool = False, debug: bool = False) -> List[Dict[str, Any]]:

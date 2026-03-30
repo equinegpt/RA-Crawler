@@ -426,7 +426,7 @@ def parse_program(html: str, url: str) -> List[Dict]:
             "class": race_class,
             "age": age,
             "sex": sex,
-            "distance": distance,
+            "distance_m": distance,
             "bonus": bonus,
             "url": url,
             "race_time": race_time,  # e.g. "1:20PM" when available

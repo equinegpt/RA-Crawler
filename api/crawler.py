@@ -204,14 +204,14 @@ UPDATE_SQL = text("""
     UPDATE race_program
     SET
         meeting_id  = COALESCE(:meeting_id, meeting_id),
-        type        = :type,
+        type        = COALESCE(:type, type),
         description = :description,
         prize       = :prize,
         condition   = :condition,
         class       = :class,
         age         = :age,
         sex         = :sex,
-        distance_m  = :distance_m,
+        distance_m  = COALESCE(:distance_m, distance_m),
         bonus       = :bonus,
         url         = :url,
         race_time   = COALESCE(:race_time, race_time)

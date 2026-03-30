@@ -56,10 +56,18 @@ CREATE TABLE IF NOT EXISTS race_program (
 );
 """
 
-# matches what maintenance/dedupe expects
+# Unique identity: one row per race per meeting.
+# Must match the WHERE clause in crawler.py UPDATE_SQL.
+# NOTE: Changed from 5-column (date,state,track,race_no,url) to 4-column.
+# The old 5-column index allowed duplicates when urls differed slightly.
 INDEX_SQL = """
-CREATE UNIQUE INDEX IF NOT EXISTS ux_race_program_ident
-ON race_program (date, state, track, race_no, url);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_race_program_identity
+ON race_program (date, state, track, race_no);
+"""
+
+# Drop the old 5-column index if it exists (safe no-op if already gone)
+DROP_OLD_INDEX_SQL = """
+DROP INDEX IF EXISTS ux_race_program_ident;
 """
 
 
@@ -185,6 +193,7 @@ def main() -> int:
         if dialect == "postgresql":
             # race_program
             conn.execute(text(TABLE_SQL_POSTGRES))
+            conn.execute(text(DROP_OLD_INDEX_SQL))
             conn.execute(text(INDEX_SQL))
             # Migration: add race_time column if missing
             conn.execute(text(ADD_RACE_TIME_COLUMN_SQL))
@@ -201,6 +210,7 @@ def main() -> int:
         elif dialect == "sqlite":
             # race_program
             conn.execute(text(TABLE_SQL_SQLITE))
+            conn.execute(text(DROP_OLD_INDEX_SQL))
             conn.execute(text(INDEX_SQL))
 
             # ra_results
