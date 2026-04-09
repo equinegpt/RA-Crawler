@@ -9,6 +9,7 @@ from sqlalchemy import text
 
 from .db import ensure_schema, get_engine
 from .races import races_router
+from .backfill_meeting_ids import canonical_track_name
 
 # Make sure the DB schema exists (safe for Postgres too)
 ensure_schema()
@@ -99,6 +100,12 @@ def list_races(
         else:
             iso_date = str(raw_date) if raw_date is not None else None
 
+        # Normalise track name so RA names match PF names
+        # e.g. "Ladbrokes Cannon Park" → "Cairns"
+        raw_track = d["track"] or ""
+        normalised = canonical_track_name(raw_track)
+        display_track = normalised.title() if normalised else raw_track
+
         out.append(
             {
                 "id": d["id"],
@@ -106,7 +113,7 @@ def list_races(
                 "date": iso_date,
                 "state": d["state"],
                 "meetingId": d.get("meeting_id"),
-                "track": d["track"],
+                "track": display_track,
                 "type": d.get("type"),
                 "description": d.get("description"),
                 "prize": d.get("prize"),
