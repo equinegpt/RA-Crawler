@@ -258,6 +258,12 @@ def list_races() -> List[Dict[str, Any]]:
         else:
             date_str = str(dt) if dt is not None else None
 
+        # Normalise track name so RA names match PF names
+        # e.g. "Ladbrokes Cannon Park" → "Cairns"
+        raw_track = r["track"] or ""
+        normalised = canonical_track_name(raw_track)
+        display_track = normalised.title() if normalised else raw_track
+
         out.append(
             {
                 "id": r["id"],
@@ -265,7 +271,7 @@ def list_races() -> List[Dict[str, Any]]:
                 "date": date_str,
                 "state": r["state"],
                 "meetingId": r["meeting_id"],  # 👈 PF meetingId, once synced
-                "track": r["track"],
+                "track": display_track,
                 "type": r["type"],
                 "description": r["description"],
                 "prize": r["prize"],
