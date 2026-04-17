@@ -121,3 +121,33 @@ class RaceDividend(Base):
             name="uq_race_dividends",
         ),
     )
+
+
+class SBEventCache(Base):
+    """Cache of Sportsbet event IDs discovered from the schedule page.
+    Populated during the day (e.g., by tips cron at 8am) and consumed
+    by the results cron at 11pm for exotic dividend scraping."""
+    __tablename__ = "sb_event_cache"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    meeting_date = Column(Date, nullable=False, index=True)
+    track_slug = Column(String, nullable=False)      # e.g. "cranbourne"
+    race_no = Column(Integer, nullable=False)
+    event_id = Column(String, nullable=False)         # e.g. "10376449"
+    url_path = Column(String, nullable=False)         # full URL path
+
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "meeting_date",
+            "track_slug",
+            "race_no",
+            name="uq_sb_event_cache",
+        ),
+    )

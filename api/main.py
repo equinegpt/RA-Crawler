@@ -277,6 +277,61 @@ def list_dividends(
     return out
 
 
+@app.post("/cache-sb-events")
+def cache_sb_events(
+    meeting_date: Optional[str] = Query(None, alias="date"),
+):
+    """
+    Fetch Sportsbet schedule page and cache event IDs for today's races.
+    Call this during the day (e.g., 8am) when the schedule still shows today.
+    The 11pm results cron will read from this cache.
+    """
+    from datetime import date as _date, datetime
+    from zoneinfo import ZoneInfo
+    from .sb_exotics_crawler import _fetch_sb_event_map
+
+    if meeting_date:
+        target = _date.fromisoformat(meeting_date)
+    else:
+        target = datetime.now(ZoneInfo("Australia/Melbourne")).date()
+
+    event_map = _fetch_sb_event_map(target)
+    if not event_map:
+        return {"ok": False, "cached": 0, "detail": "No events found on SB schedule"}
+
+    eng = get_engine()
+    cached = 0
+
+    with eng.begin() as conn:
+        # Ensure table exists
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS sb_event_cache (
+                id SERIAL PRIMARY KEY,
+                meeting_date DATE NOT NULL,
+                track_slug TEXT NOT NULL,
+                race_no INTEGER NOT NULL,
+                event_id TEXT NOT NULL,
+                url_path TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE(meeting_date, track_slug, race_no)
+            )
+        """))
+
+        for (track_slug, race_no), (event_id, url_path) in event_map.items():
+            conn.execute(text("""
+                INSERT INTO sb_event_cache (meeting_date, track_slug, race_no, event_id, url_path)
+                VALUES (:d, :slug, :rno, :eid, :path)
+                ON CONFLICT (meeting_date, track_slug, race_no)
+                DO UPDATE SET event_id = :eid, url_path = :path
+            """), {
+                "d": target, "slug": track_slug, "rno": race_no,
+                "eid": event_id, "path": url_path,
+            })
+            cached += 1
+
+    return {"ok": True, "date": target.isoformat(), "cached": cached}
+
+
 @app.post("/backfill-meetings")
 def backfill_meetings():
     """

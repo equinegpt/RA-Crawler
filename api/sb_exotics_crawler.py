@@ -291,6 +291,30 @@ def _find_combination_near(text: str, start_pos: int, num_runners: int) -> Optio
 # Step 4: Main entry point
 # ---------------------------------------------------------------------------
 
+def _load_cached_events(target_date: date) -> Dict[Tuple[str, int], Tuple[str, str]]:
+    """Load event IDs from the sb_event_cache table (populated earlier in the day)."""
+    session = SessionLocal()
+    try:
+        rows = session.execute(text("""
+            SELECT track_slug, race_no, event_id, url_path
+            FROM sb_event_cache
+            WHERE meeting_date = :d
+        """), {"d": target_date}).fetchall()
+
+        event_map: Dict[Tuple[str, int], Tuple[str, str]] = {}
+        for r in rows:
+            event_map[(r[0], r[1])] = (r[2], r[3])
+
+        if event_map:
+            print(f"[SBExotics] Loaded {len(event_map)} cached events for {target_date}")
+        return event_map
+    except Exception as e:
+        print(f"[SBExotics] Cache read error: {e}")
+        return {}
+    finally:
+        session.close()
+
+
 class SBExoticsCrawler:
     """Fetches exotic dividends from Sportsbet for tipped meetings."""
 
@@ -301,10 +325,13 @@ class SBExoticsCrawler:
 
         Returns the number of dividend rows inserted/updated.
         """
-        # 1) Get Sportsbet event map
-        event_map = _fetch_sb_event_map(target_date)
+        # 1) Get Sportsbet event map — try cached first, then live schedule
+        event_map = _load_cached_events(target_date)
         if not event_map:
-            print(f"[SBExotics] No events found on Sportsbet schedule")
+            print(f"[SBExotics] No cached events, trying live schedule...")
+            event_map = _fetch_sb_event_map(target_date)
+        if not event_map:
+            print(f"[SBExotics] No events found for {target_date}")
             return 0
 
         # 2) Get our tipped meetings
