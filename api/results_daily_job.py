@@ -20,14 +20,16 @@ def main() -> int:
         except Exception as exc:
             print(f"[results_daily_job] RA ERROR for {d}: {exc}")
 
-    # Step 2: Scrape exotic dividends from Sportsbet (yesterday only)
-    print(f"[results_daily_job] Scraping SB exotics for {yesterday}")
+    # Step 2: Scrape exotic dividends from Sportsbet
+    # At 11pm, today's races are finished and still on the schedule page.
+    # Scrape TODAY's exotics (schedule page has today's event IDs).
+    print(f"[results_daily_job] Scraping SB exotics for {today}")
     sb_crawler = SBExoticsCrawler()
     try:
-        count = sb_crawler.fetch_for_date(yesterday)
+        count = sb_crawler.fetch_for_date(today)
         print(f"[results_daily_job] SB exotics: {count} dividends")
     except Exception as exc:
-        print(f"[results_daily_job] SB exotics ERROR for {yesterday}: {exc}")
+        print(f"[results_daily_job] SB exotics ERROR for {today}: {exc}")
 
     print("[results_daily_job] Done.")
     return 0

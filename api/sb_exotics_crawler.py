@@ -49,15 +49,16 @@ def _fetch_sb_event_map(target_date: date) -> Dict[Tuple[str, int], Tuple[str, s
     This is a plain HTML fetch (no Scrape.do needed — the schedule page
     embeds race links directly in the HTML).
     """
+    # Fetch today's racing schedule — at 11pm races are done but still listed
     url = f"{SB_BASE}/racing-schedule"
 
     try:
         resp = scraper_get(url, timeout=45, render=False)
         if resp.status_code != 200:
-            print(f"[SBExotics] HTTP {resp.status_code} fetching racing schedule")
+            print(f"[SBExotics] HTTP {resp.status_code} fetching schedule")
             return {}
     except Exception as e:
-        print(f"[SBExotics] ERROR fetching racing schedule: {e}")
+        print(f"[SBExotics] ERROR fetching schedule: {e}")
         return {}
 
     html = resp.text
@@ -90,8 +91,24 @@ def _track_to_slug(track_name: str) -> str:
     """Convert a track name to Sportsbet URL slug format.
     e.g. "Moonee Valley" → "moonee-valley", "Eagle Farm" → "eagle-farm"
     """
-    slug = track_name.lower().strip()
-    slug = re.sub(r'[^a-z0-9]+', '-', slug)
+    s = track_name.lower().strip()
+
+    # Strip sponsor prefixes (same as canonical_track_name)
+    for sp in ["sportsbet", "ladbrokes", "bet365", "picklebet",
+               "thomas farms", "aquis park", "aquis", "tabtouch"]:
+        s = s.replace(sp, "")
+
+    # Known aliases where SB uses a different name
+    alias = {
+        "southside pakenham": "pakenham",
+        "southside cranbourne": "cranbourne",
+        "cannon park": "cairns",
+    }
+    s = s.strip()
+    if s in alias:
+        s = alias[s]
+
+    slug = re.sub(r'[^a-z0-9]+', '-', s)
     slug = slug.strip('-')
     return slug
 
