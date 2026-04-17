@@ -50,15 +50,12 @@ def _fetch_sb_event_map(target_date: date) -> Dict[Tuple[str, int], Tuple[str, s
     embeds race links directly in the HTML).
     """
     url = f"{SB_BASE}/racing-schedule"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        "Accept": "text/html",
-    }
 
     try:
-        resp = requests.get(url, headers=headers, timeout=30, allow_redirects=True)
-        resp.raise_for_status()
+        resp = scraper_get(url, timeout=45, render=False)
+        if resp.status_code != 200:
+            print(f"[SBExotics] HTTP {resp.status_code} fetching racing schedule")
+            return {}
     except Exception as e:
         print(f"[SBExotics] ERROR fetching racing schedule: {e}")
         return {}
