@@ -89,3 +89,35 @@ class RAResult(Base):
             name="uq_ra_results_runner",
         ),
     )
+
+
+class RaceDividend(Base):
+    """Exotic dividends scraped from Sportsbet (Q/T/Quaddie)."""
+    __tablename__ = "race_dividends"
+
+    id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+
+    meeting_date = Column(Date, nullable=False, index=True)
+    state = Column(String(3), nullable=False)
+    track = Column(String, nullable=False)
+    race_no = Column(Integer, nullable=False)
+
+    dividend_type = Column(String(10), nullable=False)  # "Q", "T", "QUAD"
+    dividend_amount = Column(Numeric(10, 2), nullable=True)  # e.g. 12.40
+    combination = Column(String, nullable=True)  # e.g. "3/7" or "3/7/1" or "2/5/8/1"
+
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "meeting_date",
+            "track",
+            "race_no",
+            "dividend_type",
+            name="uq_race_dividends",
+        ),
+    )

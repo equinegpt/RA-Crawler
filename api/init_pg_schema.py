@@ -176,6 +176,35 @@ END $$;
 """
 
 
+# ---------------------------------------------------------------------------
+# New table: race_dividends (exotic dividends from Sportsbet)
+# ---------------------------------------------------------------------------
+
+RACE_DIVIDENDS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS race_dividends (
+    id             SERIAL PRIMARY KEY,
+    meeting_date   DATE        NOT NULL,
+    state          VARCHAR(3)  NOT NULL,
+    track          TEXT        NOT NULL,
+    race_no        INTEGER     NOT NULL,
+    dividend_type  VARCHAR(10) NOT NULL,
+    dividend_amount NUMERIC(10,2),
+    combination    TEXT,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+"""
+
+RACE_DIVIDENDS_UNIQUE_INDEX_SQL = """
+CREATE UNIQUE INDEX IF NOT EXISTS ux_race_dividends
+ON race_dividends (meeting_date, track, race_no, dividend_type);
+"""
+
+RACE_DIVIDENDS_DATE_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS ix_race_dividends_date
+ON race_dividends (meeting_date);
+"""
+
+
 def main() -> int:
     url = os.getenv("DATABASE_URL")
     if not url:
@@ -206,6 +235,11 @@ def main() -> int:
             conn.execute(text(RA_RESULTS_INDEX_TRACK_SQL))
             # Migration: add trainer/jockey columns if missing
             conn.execute(text(ADD_TRAINER_JOCKEY_COLUMNS_SQL))
+
+            # race_dividends
+            conn.execute(text(RACE_DIVIDENDS_TABLE_SQL))
+            conn.execute(text(RACE_DIVIDENDS_UNIQUE_INDEX_SQL))
+            conn.execute(text(RACE_DIVIDENDS_DATE_INDEX_SQL))
 
         elif dialect == "sqlite":
             # race_program

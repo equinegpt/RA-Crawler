@@ -220,6 +220,63 @@ def list_results(
     return out
 
 
+@app.get("/dividends")
+def list_dividends(
+    meeting_date: Optional[str] = Query(
+        None, alias="date", description="Filter by meeting date (YYYY-MM-DD)"
+    ),
+    track: Optional[str] = Query(
+        None, description="Filter by track name"
+    ),
+):
+    """
+    List exotic dividends (Q/T/Quaddie) from race_dividends table.
+    """
+    eng = get_engine()
+
+    sql = """
+        SELECT meeting_date, state, track, race_no,
+               dividend_type, dividend_amount, combination
+        FROM race_dividends
+        WHERE 1=1
+    """
+    params: dict[str, object] = {}
+
+    if meeting_date:
+        sql += " AND meeting_date = :meeting_date"
+        params["meeting_date"] = meeting_date
+    if track:
+        sql += " AND track = :track"
+        params["track"] = track
+
+    sql += " ORDER BY meeting_date, track, race_no, dividend_type"
+
+    with eng.connect() as c:
+        rows = c.execute(text(sql), params).mappings().all()
+
+    out = []
+    for d in rows:
+        raw_date = d.get("meeting_date")
+        if hasattr(raw_date, "isoformat"):
+            iso_date = raw_date.isoformat()
+        else:
+            iso_date = str(raw_date) if raw_date is not None else None
+
+        amount = d.get("dividend_amount")
+
+        out.append({
+            "meeting_date": iso_date,
+            "state": d["state"],
+            "track": d["track"],
+            "race_no": d["race_no"],
+            "dividend_type": d["dividend_type"],
+            "dividend_amount": float(amount) if amount is not None else None,
+            "combination": d.get("combination"),
+        })
+
+    return out
+
+
 @app.post("/backfill-meetings")
 def backfill_meetings():
     """
