@@ -277,6 +277,36 @@ def list_dividends(
     return out
 
 
+@app.post("/backfill-exotics")
+def backfill_exotics(
+    start_date: str = Query(..., alias="start"),
+    end_date: str = Query(..., alias="end"),
+):
+    """
+    Backfill exotic dividends from TAB for a date range.
+    e.g. POST /backfill-exotics?start=2026-04-14&end=2026-04-19
+    """
+    from datetime import date as _date, timedelta
+    from .sb_exotics_crawler import SBExoticsCrawler
+
+    start = _date.fromisoformat(start_date)
+    end = _date.fromisoformat(end_date)
+    crawler = SBExoticsCrawler()
+
+    results = []
+    d = start
+    while d <= end:
+        try:
+            count = crawler.fetch_for_date(d)
+            results.append({"date": d.isoformat(), "dividends": count})
+        except Exception as e:
+            results.append({"date": d.isoformat(), "error": str(e)})
+        d += timedelta(days=1)
+
+    total = sum(r.get("dividends", 0) for r in results)
+    return {"ok": True, "total_dividends": total, "days": results}
+
+
 @app.post("/cache-sb-events")
 def cache_sb_events(
     meeting_date: Optional[str] = Query(None, alias="date"),
