@@ -1,16 +1,15 @@
 # api/sb_exotics_crawler.py
 """
-Scrapes exotic dividends (Quinella, Trifecta, Quaddie) from Sportsbet
+Scrapes exotic dividends (Quinella, Trifecta, Quaddie) from TAB.com.au
 for races where we generated tips.
 
-Approach:
-  1. Get our tipped meetings for the date (M/P/big-maiden C)
-  2. For each meeting: fetch its Sportsbet track page to discover event IDs
-  3. For each race: fetch /exotics page → parse Q/T dividends
-  4. For Quaddie: fetch /multiples page on the last race
-  5. Upsert into race_dividends table
+TAB URL pattern:
+  https://www.tab.com.au/racing/{YYYY-MM-DD}/{TRACK}/{M|P|C}/R/{raceNo}
 
-All Sportsbet fetches go through Scrape.do (JS rendering where needed).
+The page has tabs: Results | Dividends | Exotics | Multiples | Deductions
+We need the Exotics tab content which shows Q/T/First4 dividends.
+
+All fetches go through Scrape.do with render=true (TAB is a SPA).
 """
 from __future__ import annotations
 
@@ -19,7 +18,6 @@ import time
 from datetime import date
 from typing import Dict, List, Optional, Tuple
 
-from bs4 import BeautifulSoup
 from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
@@ -29,26 +27,25 @@ from .db import get_engine
 _engine = get_engine()
 SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False)
 
-SB_BASE = "https://www.sportsbet.com.au"
+TAB_BASE = "https://www.tab.com.au"
 
 
 # ---------------------------------------------------------------------------
-# Track name → Sportsbet slug
+# Track name → TAB URL format
 # ---------------------------------------------------------------------------
 
-# Known aliases where our track name differs from SB slug
-_TRACK_ALIASES = {
-    "southside pakenham": "pakenham",
-    "southside cranbourne": "cranbourne",
-    "cannon park": "cairns",
-    "ladbrokes cannon park": "cairns",
-    "aquis park gold coast": "gold-coast",
-    "aquis park gold coast poly": "gold-coast-poly",
-    "ladbrokes pioneer park": "pioneer-park",
-    "morphettville parks": "morphettville",
-    "royal randwick": "randwick",
-    "rosehill gardens": "rosehill",
-    "beaumont newcastle": "newcastle",
+# TAB uses UPPERCASE track names in URLs, mostly matching RA names
+# Known differences where our track name differs from TAB's URL
+_TAB_TRACK_MAP = {
+    "southside pakenham": "PAKENHAM",
+    "southside cranbourne": "CRANBOURNE",
+    "rosehill gardens": "ROSEHILL GARDENS",
+    "royal randwick": "RANDWICK",
+    "aquis park gold coast": "GOLD COAST",
+    "aquis park gold coast poly": "GOLD COAST POLY",
+    "ladbrokes pioneer park": "DARWIN",
+    "ladbrokes cannon park": "CAIRNS",
+    "morphettville parks": "MORPHETTVILLE PARKS",
 }
 
 # Sponsor prefixes to strip
@@ -58,169 +55,115 @@ _SPONSORS = [
 ]
 
 
-def _track_to_slug(track_name: str) -> str:
-    """Convert track name to Sportsbet URL slug."""
+def _track_to_tab_name(track_name: str) -> str:
+    """Convert our track name to TAB URL format (uppercase)."""
     s = track_name.lower().strip()
 
-    # Check alias map first (before stripping)
-    if s in _TRACK_ALIASES:
-        return _TRACK_ALIASES[s]
+    # Check alias map first
+    if s in _TAB_TRACK_MAP:
+        return _TAB_TRACK_MAP[s]
 
     # Strip sponsors
     for sp in _SPONSORS:
         s = s.replace(sp, "").strip()
 
-    # Check alias again after stripping
-    if s in _TRACK_ALIASES:
-        return _TRACK_ALIASES[s]
+    # Check again after stripping
+    if s in _TAB_TRACK_MAP:
+        return _TAB_TRACK_MAP[s]
 
-    # Convert to slug
-    slug = re.sub(r'[^a-z0-9]+', '-', s).strip('-')
-    return slug
+    return s.upper()
+
+
+def _type_to_tab(meeting_type: str) -> str:
+    """Convert meeting type to TAB URL format."""
+    t = (meeting_type or "").upper()
+    if t in ("M", "P", "C"):
+        return t
+    return "C"  # default to Country
 
 
 # ---------------------------------------------------------------------------
-# Fetch event IDs from a track's Sportsbet page
+# Scrape a single TAB race page for exotic dividends
 # ---------------------------------------------------------------------------
 
-def _fetch_results_event_map(target_date: date) -> Dict[Tuple[str, int], Tuple[str, str]]:
+def _scrape_tab_exotics(
+    target_date: date,
+    track: str,
+    meeting_type: str,
+    race_no: int,
+) -> Dict[str, Optional[Tuple[float, str]]]:
     """
-    Fetch the Sportsbet results page for a specific date and extract
-    ALL track/race event IDs.
+    Fetch a TAB race page and extract Q/T dividends.
 
-    URL: /racing-schedule/results/YYYY-MM-DD
+    URL: /racing/{date}/{TRACK}/{type}/R/{raceNo}
 
-    Returns dict of (track_slug, race_no) → (event_id, url_path)
+    Returns dict e.g. {"Q": (4.40, "8/1"), "T": (58.00, "8/1/5")}
     """
+    tab_track = _track_to_tab_name(track)
+    tab_type = _type_to_tab(meeting_type)
     date_str = target_date.isoformat()
-    url = f"{SB_BASE}/racing-schedule/results/{date_str}"
-    print(f"[SBExotics] Fetching results page: {url}")
+
+    # TAB URL uses URL-encoded spaces for multi-word tracks
+    tab_track_url = tab_track.replace(" ", "%20")
+    url = f"{TAB_BASE}/racing/{date_str}/{tab_track_url}/{tab_type}/R/{race_no}"
+    print(f"[TABExotics] Fetching {url}")
 
     try:
         resp = scraper_get(url, timeout=60, render=True)
         if resp.status_code != 200:
-            print(f"[SBExotics] HTTP {resp.status_code} for results page")
+            print(f"[TABExotics] HTTP {resp.status_code}")
             return {}
     except Exception as e:
-        print(f"[SBExotics] ERROR fetching results page: {e}")
-        return {}
-
-    # Extract ALL event URLs
-    pattern = re.compile(
-        r'horse-racing/australia-nz/([a-z0-9-]+)/race-(\d+)-(\d+)'
-    )
-
-    event_map: Dict[Tuple[str, int], Tuple[str, str]] = {}
-    for m in pattern.finditer(resp.text):
-        track_slug = m.group(1)
-        race_no = int(m.group(2))
-        event_id = m.group(3)
-        full_path = m.group(0)
-        key = (track_slug, race_no)
-        if key not in event_map:
-            event_map[key] = (event_id, full_path)
-
-    # Group by track for logging
-    tracks = {}
-    for (slug, rno), _ in event_map.items():
-        tracks.setdefault(slug, []).append(rno)
-
-    print(f"[SBExotics] Found {len(event_map)} events across {len(tracks)} tracks:")
-    for t, races in sorted(tracks.items()):
-        print(f"[SBExotics]   {t}: R{sorted(races)}")
-
-    return event_map
-
-
-# ---------------------------------------------------------------------------
-# Scrape exotics / dividends
-# ---------------------------------------------------------------------------
-
-def _scrape_race_exotics(event_url_path: str) -> Dict[str, Optional[Tuple[float, str]]]:
-    """
-    Scrape the /exotics tab for Q/T dividends via Scrape.do.
-    Returns dict e.g. {"Q": (12.40, "3/7"), "T": (87.20, "3/7/1")}
-    """
-    url = f"{SB_BASE}/{event_url_path}/exotics"
-    print(f"[SBExotics] Scraping {url}")
-
-    try:
-        resp = scraper_get(url, timeout=60, render=True)
-        if resp.status_code != 200:
-            print(f"[SBExotics] HTTP {resp.status_code} for exotics")
-            return {}
-    except Exception as e:
-        print(f"[SBExotics] ERROR scraping exotics: {e}")
+        print(f"[TABExotics] ERROR: {e}")
         return {}
 
     page_text = resp.text
     dividends: Dict[str, Optional[Tuple[float, str]]] = {}
 
-    # Quinella
-    q_match = re.search(r'Quinella[^$]*?\$\s*([\d,]+\.?\d*)', page_text, re.IGNORECASE)
+    # Parse Quinella: look for "Quinella" near numbers and a dollar amount
+    # TAB format: Quinella [8] [1] ... 4.40
+    q_match = re.search(
+        r'Quinella.*?(\d{1,2})\D+(\d{1,2})\D+?([\d,]+\.?\d{0,2})\s*$',
+        page_text, re.IGNORECASE | re.MULTILINE
+    )
+    if not q_match:
+        # Try simpler pattern
+        q_match = re.search(
+            r'Quinella[^0-9]*?(\d{1,2})[^0-9]+(\d{1,2})[^0-9]+([\d,]+\.\d{2})',
+            page_text, re.IGNORECASE
+        )
     if q_match:
         try:
-            amount = float(q_match.group(1).replace(',', ''))
-            combo = _find_combination_near(page_text, q_match.end(), 2)
-            dividends["Q"] = (amount, combo or "")
-            print(f"[SBExotics]   Quinella: ${amount}")
+            combo = f"{q_match.group(1)}/{q_match.group(2)}"
+            amount = float(q_match.group(3).replace(',', ''))
+            dividends["Q"] = (amount, combo)
+            print(f"[TABExotics]   Quinella: ${amount} ({combo})")
         except ValueError:
             pass
 
-    # Trifecta
-    t_match = re.search(r'Trifecta[^$]*?\$\s*([\d,]+\.?\d*)', page_text, re.IGNORECASE)
+    # Parse Trifecta
+    t_match = re.search(
+        r'Trifecta[^0-9]*?(\d{1,2})[^0-9]+(\d{1,2})[^0-9]+(\d{1,2})[^0-9]+([\d,]+\.\d{2})',
+        page_text, re.IGNORECASE
+    )
     if t_match:
         try:
-            amount = float(t_match.group(1).replace(',', ''))
-            combo = _find_combination_near(page_text, t_match.end(), 3)
-            dividends["T"] = (amount, combo or "")
-            print(f"[SBExotics]   Trifecta: ${amount}")
+            combo = f"{t_match.group(1)}/{t_match.group(2)}/{t_match.group(3)}"
+            amount = float(t_match.group(4).replace(',', ''))
+            dividends["T"] = (amount, combo)
+            print(f"[TABExotics]   Trifecta: ${amount} ({combo})")
         except ValueError:
             pass
 
     if not dividends:
-        print(f"[SBExotics]   No dividends found on page")
+        # Debug: show what we got
+        text_len = len(page_text)
+        has_exotic = "exotic" in page_text.lower()
+        has_quinella = "quinella" in page_text.lower()
+        print(f"[TABExotics]   No dividends parsed (page={text_len}b, "
+              f"has_exotic={has_exotic}, has_quinella={has_quinella})")
 
     return dividends
-
-
-def _scrape_quaddie(event_url_path: str) -> Optional[Tuple[float, str]]:
-    """Scrape /multiples tab for Quaddie dividend."""
-    url = f"{SB_BASE}/{event_url_path}/multiples"
-    print(f"[SBExotics] Scraping Quaddie: {url}")
-
-    try:
-        resp = scraper_get(url, timeout=60, render=True)
-        if resp.status_code != 200:
-            return None
-    except Exception as e:
-        print(f"[SBExotics] ERROR scraping multiples: {e}")
-        return None
-
-    q_match = re.search(
-        r'(?<!Early\s)Quaddie[^$]*?\$\s*([\d,]+\.?\d*)',
-        resp.text, re.IGNORECASE
-    )
-    if q_match:
-        try:
-            amount = float(q_match.group(1).replace(',', ''))
-            combo = _find_combination_near(resp.text, q_match.end(), 4)
-            print(f"[SBExotics]   Quaddie: ${amount}")
-            return (amount, combo or "")
-        except ValueError:
-            pass
-    return None
-
-
-def _find_combination_near(text: str, start_pos: int, num_runners: int) -> Optional[str]:
-    """Find a runner combination like '3/7' near the given position."""
-    snippet = text[start_pos:start_pos + 300]
-    sep = r'[/\-,]'
-    pattern = r'(\d{1,2})' + (sep + r'\s*(\d{1,2})') * (num_runners - 1)
-    m = re.search(pattern, snippet)
-    if m:
-        return '/'.join(g for g in m.groups() if g)
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -228,27 +171,20 @@ def _find_combination_near(text: str, start_pos: int, num_runners: int) -> Optio
 # ---------------------------------------------------------------------------
 
 def _get_tipped_meetings(target_date: date) -> List[Dict]:
-    """Get meetings we generated tips for on this date (M/P + big-maiden C)."""
+    """Get meetings we generated tips for (M/P + big-maiden C)."""
     session = SessionLocal()
     try:
-        # M and P meetings
         rows = session.execute(text("""
             SELECT DISTINCT track, state, type
             FROM race_program
-            WHERE date = :d
-              AND meeting_id IS NOT NULL
-              AND type IN ('M', 'P')
+            WHERE date = :d AND meeting_id IS NOT NULL AND type IN ('M', 'P')
         """), {"d": target_date.isoformat()}).fetchall()
 
-        # Country with big maiden
         country_rows = session.execute(text("""
             SELECT DISTINCT track, state, type
             FROM race_program
-            WHERE date = :d
-              AND meeting_id IS NOT NULL
-              AND type = 'C'
-              AND LOWER(class) LIKE '%%maiden%%'
-              AND prize > 29000
+            WHERE date = :d AND meeting_id IS NOT NULL AND type = 'C'
+              AND LOWER(class) LIKE '%%maiden%%' AND prize > 29000
         """), {"d": target_date.isoformat()}).fetchall()
 
         meetings = []
@@ -263,13 +199,25 @@ def _get_tipped_meetings(target_date: date) -> List[Dict]:
         session.close()
 
 
+def _get_race_count(target_date: date, track: str) -> int:
+    """Get number of races for a meeting."""
+    session = SessionLocal()
+    try:
+        row = session.execute(text("""
+            SELECT MAX(race_no) FROM race_program
+            WHERE date = :d AND track = :t
+        """), {"d": target_date.isoformat(), "t": track}).fetchone()
+        return row[0] if row and row[0] else 0
+    finally:
+        session.close()
+
+
 # ---------------------------------------------------------------------------
 # Upsert dividend
 # ---------------------------------------------------------------------------
 
 def _upsert_dividend(session, meeting_date, state, track, race_no,
                      dividend_type, amount, combination) -> int:
-    """Insert or update a dividend row. Returns 1."""
     existing = session.execute(text("""
         SELECT id FROM race_dividends
         WHERE meeting_date = :d AND track = :t AND race_no = :r AND dividend_type = :dt
@@ -292,58 +240,17 @@ def _upsert_dividend(session, meeting_date, state, track, race_no,
 # Main crawler
 # ---------------------------------------------------------------------------
 
-def _load_cached_events(target_date: date) -> Dict[Tuple[str, int], Tuple[str, str]]:
-    """Load event IDs from sb_event_cache table."""
-    session = SessionLocal()
-    try:
-        rows = session.execute(text("""
-            SELECT track_slug, race_no, event_id, url_path
-            FROM sb_event_cache
-            WHERE meeting_date = :d
-        """), {"d": target_date}).fetchall()
-        result = {}
-        for r in rows:
-            result[(r[0], r[1])] = (r[2], r[3])
-        if result:
-            print(f"[SBExotics] Loaded {len(result)} cached events for {target_date}")
-        return result
-    except Exception as e:
-        print(f"[SBExotics] Cache read error (table may not exist): {e}")
-        return {}
-    finally:
-        session.close()
-
-
-def _get_cached_events_for_slug(
-    cached: Dict[Tuple[str, int], Tuple[str, str]],
-    slug: str,
-) -> Dict[int, Tuple[str, str]]:
-    """Filter cached events for a specific track slug."""
-    events = {}
-    for (s, rno), (eid, path) in cached.items():
-        if s == slug:
-            events[rno] = (eid, path)
-    return events
-
-
 class SBExoticsCrawler:
-    """Fetches exotic dividends from Sportsbet for tipped meetings."""
+    """Fetches exotic dividends from TAB.com.au for tipped meetings."""
 
     def fetch_for_date(self, target_date: date) -> int:
         """Main entry point. Returns number of dividends upserted."""
-
         meetings = _get_tipped_meetings(target_date)
         if not meetings:
-            print(f"[SBExotics] No tipped meetings for {target_date}")
+            print(f"[TABExotics] No tipped meetings for {target_date}")
             return 0
 
-        print(f"[SBExotics] {len(meetings)} tipped meetings for {target_date}")
-
-        # Fetch all event IDs from SB results page for this date
-        event_map = _fetch_results_event_map(target_date)
-        if not event_map:
-            print(f"[SBExotics] No events found on SB results page")
-            return 0
+        print(f"[TABExotics] {len(meetings)} tipped meetings for {target_date}")
 
         session = SessionLocal()
         total = 0
@@ -352,22 +259,18 @@ class SBExoticsCrawler:
             for meeting in meetings:
                 track = meeting["track"]
                 state = meeting["state"]
-                slug = _track_to_slug(track)
+                mtype = meeting["type"]
+                num_races = _get_race_count(target_date, track)
 
-                # Get event IDs for this track from the results page
-                events = {}
-                for (s, rno), (eid, path) in event_map.items():
-                    if s == slug:
-                        events[rno] = (eid, path)
-                if not events:
-                    print(f"[SBExotics] Skipping {track} — no events found for slug={slug}")
-                    time.sleep(2)
+                if num_races == 0:
+                    print(f"[TABExotics] {track}: no races found in DB")
                     continue
 
-                # Step 2: Scrape exotics for each race
-                for race_no, (event_id, url_path) in sorted(events.items()):
+                print(f"[TABExotics] {track} ({state}) {mtype}: {num_races} races")
+
+                for race_no in range(1, num_races + 1):
                     try:
-                        divs = _scrape_race_exotics(url_path)
+                        divs = _scrape_tab_exotics(target_date, track, mtype, race_no)
                         for div_type, div_data in divs.items():
                             if div_data:
                                 amount, combo = div_data
@@ -375,29 +278,13 @@ class SBExoticsCrawler:
                                     session, target_date, state, track,
                                     race_no, div_type, amount, combo
                                 )
-                        time.sleep(2)  # rate limit
+                        time.sleep(3)  # rate limit — be nice
                     except Exception as e:
-                        print(f"[SBExotics] ERROR {track} R{race_no}: {e}")
-
-                # Step 3: Scrape Quaddie (last race)
-                if len(events) >= 4:
-                    last_race = max(events.keys())
-                    _, last_path = events[last_race]
-                    try:
-                        quad = _scrape_quaddie(last_path)
-                        if quad:
-                            amount, combo = quad
-                            total += _upsert_dividend(
-                                session, target_date, state, track,
-                                last_race, "QUAD", amount, combo
-                            )
-                        time.sleep(2)
-                    except Exception as e:
-                        print(f"[SBExotics] ERROR Quaddie {track}: {e}")
+                        print(f"[TABExotics] ERROR {track} R{race_no}: {e}")
 
             session.commit()
         finally:
             session.close()
 
-        print(f"[SBExotics] Done for {target_date}: {total} dividends upserted")
+        print(f"[TABExotics] Done for {target_date}: {total} dividends upserted")
         return total
