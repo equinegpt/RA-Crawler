@@ -282,22 +282,33 @@ def cache_sb_events(
     meeting_date: Optional[str] = Query(None, alias="date"),
 ):
     """
-    Fetch Sportsbet schedule page and cache event IDs for today's races.
-    Call this during the day (e.g., 8am) when the schedule still shows today.
-    The 11pm results cron will read from this cache.
+    Fetch Sportsbet track pages for tipped meetings and cache event IDs.
+    Call this during the day (e.g., 8am tips cron) when races are listed.
+    The 11pm results cron reads from this cache for exotic scraping.
     """
     from datetime import date as _date, datetime
     from zoneinfo import ZoneInfo
-    from .sb_exotics_crawler import _fetch_sb_event_map
+    from .sb_exotics_crawler import _get_tipped_meetings, _track_to_slug, _fetch_track_event_ids
 
     if meeting_date:
         target = _date.fromisoformat(meeting_date)
     else:
         target = datetime.now(ZoneInfo("Australia/Melbourne")).date()
 
-    event_map = _fetch_sb_event_map(target)
+    meetings = _get_tipped_meetings(target)
+    if not meetings:
+        return {"ok": False, "cached": 0, "detail": "No tipped meetings for this date"}
+
+    # Fetch each track page individually via Scrape.do
+    event_map = {}
+    for m in meetings:
+        slug = _track_to_slug(m["track"])
+        events = _fetch_track_event_ids(slug)
+        for race_no, (eid, path) in events.items():
+            event_map[(slug, race_no)] = (eid, path)
+
     if not event_map:
-        return {"ok": False, "cached": 0, "detail": "No events found on SB schedule"}
+        return {"ok": False, "cached": 0, "detail": f"No SB events found for {len(meetings)} tipped meetings"}
 
     eng = get_engine()
     cached = 0

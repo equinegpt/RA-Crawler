@@ -279,6 +279,40 @@ def _upsert_dividend(session, meeting_date, state, track, race_no,
 # Main crawler
 # ---------------------------------------------------------------------------
 
+def _load_cached_events(target_date: date) -> Dict[Tuple[str, int], Tuple[str, str]]:
+    """Load event IDs from sb_event_cache table."""
+    session = SessionLocal()
+    try:
+        rows = session.execute(text("""
+            SELECT track_slug, race_no, event_id, url_path
+            FROM sb_event_cache
+            WHERE meeting_date = :d
+        """), {"d": target_date}).fetchall()
+        result = {}
+        for r in rows:
+            result[(r[0], r[1])] = (r[2], r[3])
+        if result:
+            print(f"[SBExotics] Loaded {len(result)} cached events for {target_date}")
+        return result
+    except Exception as e:
+        print(f"[SBExotics] Cache read error (table may not exist): {e}")
+        return {}
+    finally:
+        session.close()
+
+
+def _get_cached_events_for_slug(
+    cached: Dict[Tuple[str, int], Tuple[str, str]],
+    slug: str,
+) -> Dict[int, Tuple[str, str]]:
+    """Filter cached events for a specific track slug."""
+    events = {}
+    for (s, rno), (eid, path) in cached.items():
+        if s == slug:
+            events[rno] = (eid, path)
+    return events
+
+
 class SBExoticsCrawler:
     """Fetches exotic dividends from Sportsbet for tipped meetings."""
 
@@ -292,6 +326,11 @@ class SBExoticsCrawler:
 
         print(f"[SBExotics] {len(meetings)} tipped meetings for {target_date}")
 
+        # Try cached events first (populated at 8am when races are live)
+        cached = _load_cached_events(target_date)
+        if cached:
+            print(f"[SBExotics] Using {len(cached)} cached events")
+
         session = SessionLocal()
         total = 0
 
@@ -301,8 +340,10 @@ class SBExoticsCrawler:
                 state = meeting["state"]
                 slug = _track_to_slug(track)
 
-                # Step 1: Fetch track page to discover event IDs
-                events = _fetch_track_event_ids(slug)
+                # Step 1: Get event IDs — from cache or live track page
+                events = _get_cached_events_for_slug(cached, slug) if cached else {}
+                if not events:
+                    events = _fetch_track_event_ids(slug)
                 if not events:
                     print(f"[SBExotics] Skipping {track} — no events found for slug={slug}")
                     time.sleep(2)
