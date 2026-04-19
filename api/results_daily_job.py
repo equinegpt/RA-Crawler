@@ -21,8 +21,8 @@ def main() -> int:
             print(f"[results_daily_job] RA ERROR for {d}: {exc}")
 
     # Step 2: Scrape exotic dividends from Sportsbet
-    # At 11pm, today's races are finished and still on the schedule page.
-    # Scrape TODAY's exotics (schedule page has today's event IDs).
+    # Use the SB results page which shows completed races with event IDs.
+    # Scrape TODAY (at 11pm races are done) and YESTERDAY (catch-up).
     print(f"[results_daily_job] Scraping SB exotics for {today}")
     sb_crawler = SBExoticsCrawler()
     try:

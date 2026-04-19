@@ -83,40 +83,53 @@ def _track_to_slug(track_name: str) -> str:
 # Fetch event IDs from a track's Sportsbet page
 # ---------------------------------------------------------------------------
 
-def _fetch_track_event_ids(track_slug: str) -> Dict[int, Tuple[str, str]]:
+def _fetch_results_event_map(target_date: date) -> Dict[Tuple[str, int], Tuple[str, str]]:
     """
-    Fetch a Sportsbet track page and extract race event IDs.
+    Fetch the Sportsbet results page for a specific date and extract
+    ALL track/race event IDs.
 
-    Returns dict of race_no → (event_id, url_path)
-    e.g. {1: ("10376449", "horse-racing/australia-nz/cranbourne/race-1-10376449"), ...}
+    URL: /racing-schedule/results/YYYY-MM-DD
+
+    Returns dict of (track_slug, race_no) → (event_id, url_path)
     """
-    url = f"{SB_BASE}/horse-racing/australia-nz/{track_slug}"
-    print(f"[SBExotics] Fetching track page: {url}")
+    date_str = target_date.isoformat()
+    url = f"{SB_BASE}/racing-schedule/results/{date_str}"
+    print(f"[SBExotics] Fetching results page: {url}")
 
     try:
-        resp = scraper_get(url, timeout=45, render=True)
+        resp = scraper_get(url, timeout=60, render=True)
         if resp.status_code != 200:
-            print(f"[SBExotics] HTTP {resp.status_code} for {url}")
+            print(f"[SBExotics] HTTP {resp.status_code} for results page")
             return {}
     except Exception as e:
-        print(f"[SBExotics] ERROR fetching {url}: {e}")
+        print(f"[SBExotics] ERROR fetching results page: {e}")
         return {}
 
-    # Extract event URLs for this track
+    # Extract ALL event URLs
     pattern = re.compile(
-        rf'horse-racing/australia-nz/{re.escape(track_slug)}/race-(\d+)-(\d+)'
+        r'horse-racing/australia-nz/([a-z0-9-]+)/race-(\d+)-(\d+)'
     )
 
-    events: Dict[int, Tuple[str, str]] = {}
+    event_map: Dict[Tuple[str, int], Tuple[str, str]] = {}
     for m in pattern.finditer(resp.text):
-        race_no = int(m.group(1))
-        event_id = m.group(2)
+        track_slug = m.group(1)
+        race_no = int(m.group(2))
+        event_id = m.group(3)
         full_path = m.group(0)
-        if race_no not in events:
-            events[race_no] = (event_id, full_path)
+        key = (track_slug, race_no)
+        if key not in event_map:
+            event_map[key] = (event_id, full_path)
 
-    print(f"[SBExotics] {track_slug}: found {len(events)} race events")
-    return events
+    # Group by track for logging
+    tracks = {}
+    for (slug, rno), _ in event_map.items():
+        tracks.setdefault(slug, []).append(rno)
+
+    print(f"[SBExotics] Found {len(event_map)} events across {len(tracks)} tracks:")
+    for t, races in sorted(tracks.items()):
+        print(f"[SBExotics]   {t}: R{sorted(races)}")
+
+    return event_map
 
 
 # ---------------------------------------------------------------------------
@@ -326,10 +339,11 @@ class SBExoticsCrawler:
 
         print(f"[SBExotics] {len(meetings)} tipped meetings for {target_date}")
 
-        # Try cached events first (populated at 8am when races are live)
-        cached = _load_cached_events(target_date)
-        if cached:
-            print(f"[SBExotics] Using {len(cached)} cached events")
+        # Fetch all event IDs from SB results page for this date
+        event_map = _fetch_results_event_map(target_date)
+        if not event_map:
+            print(f"[SBExotics] No events found on SB results page")
+            return 0
 
         session = SessionLocal()
         total = 0
@@ -340,10 +354,11 @@ class SBExoticsCrawler:
                 state = meeting["state"]
                 slug = _track_to_slug(track)
 
-                # Step 1: Get event IDs — from cache or live track page
-                events = _get_cached_events_for_slug(cached, slug) if cached else {}
-                if not events:
-                    events = _fetch_track_event_ids(slug)
+                # Get event IDs for this track from the results page
+                events = {}
+                for (s, rno), (eid, path) in event_map.items():
+                    if s == slug:
+                        events[rno] = (eid, path)
                 if not events:
                     print(f"[SBExotics] Skipping {track} — no events found for slug={slug}")
                     time.sleep(2)
