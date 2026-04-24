@@ -49,11 +49,18 @@ def search_horses(q: str = "", limit: int = Query(20, le=50)):
     eng = _get_racing_engine()
     with eng.connect() as db:
         result = db.execute(text("""
-            SELECT horse_code, name, sire_name, dam_name, sex, colour,
-                   career_wins, career_prizemoney
-            FROM horses
-            WHERE name ILIKE :q
-            ORDER BY career_prizemoney DESC NULLS LAST
+            SELECT h.horse_code, h.name, h.sire_name, h.dam_name, h.sex, h.colour,
+                   COALESCE(stats.wins, 0) as career_wins,
+                   COALESCE(stats.prizemoney, 0) as career_prizemoney
+            FROM horses h
+            LEFT JOIN LATERAL (
+                SELECT SUM(CASE WHEN rr.position = 1 THEN 1 ELSE 0 END) as wins,
+                       SUM(rr.prizemoney_won) as prizemoney
+                FROM race_results rr
+                WHERE rr.horse_id = h.horse_id AND rr.is_trial = FALSE
+            ) stats ON true
+            WHERE h.name ILIKE :q
+            ORDER BY stats.prizemoney DESC NULLS LAST
             LIMIT :limit
         """), {"q": f"%{q}%", "limit": limit})
         return _rows_to_dicts(result, [
