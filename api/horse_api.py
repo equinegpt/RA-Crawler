@@ -10,6 +10,7 @@ If the racing-db tables are in a SEPARATE database, set RACING_DB_URL env var.
 from __future__ import annotations
 
 import os
+import time
 from typing import Optional
 
 from fastapi import APIRouter, Query
@@ -36,6 +37,26 @@ def _get_racing_engine() -> Engine:
 
 def _rows_to_dicts(result, keys: list[str]) -> list[dict]:
     return [dict(zip(keys, row)) for row in result]
+
+
+# ============================================================================
+# SIMPLE IN-MEMORY CACHE
+# ============================================================================
+# Heavy breeding/track queries take 30-50s. Cache results for 1 hour.
+
+_cache: dict[str, tuple[float, list]] = {}
+CACHE_TTL = 3600  # 1 hour
+
+def _cached(key: str, fn, ttl: int = CACHE_TTL):
+    """Return cached result if fresh, otherwise compute and cache."""
+    now = time.time()
+    if key in _cache:
+        ts, data = _cache[key]
+        if now - ts < ttl:
+            return data
+    data = fn()
+    _cache[key] = (now, data)
+    return data
 
 
 # ============================================================================
@@ -211,6 +232,12 @@ def horse_profile(horse_code: str, form_limit: int = Query(50, le=100)):
 def sire_leaderboard(
     sort: str = "prizemoney", limit: int = 50, min_runners: int = 10
 ):
+    cache_key = f"sire_lb_{sort}_{limit}_{min_runners}"
+    def _query():
+        return _sire_leaderboard_query(sort, limit, min_runners)
+    return _cached(cache_key, _query)
+
+def _sire_leaderboard_query(sort, limit, min_runners):
     order_map = {
         "prizemoney": "total_prizemoney DESC NULLS LAST",
         "winners": "winners DESC",
@@ -276,6 +303,10 @@ def sire_leaderboard(
 def broodmare_sire_leaderboard(
     sort: str = "prizemoney", limit: int = 50, min_runners: int = 3
 ):
+    return _cached(f"bms_{sort}_{limit}_{min_runners}",
+                   lambda: _broodmare_sire_query(sort, limit, min_runners))
+
+def _broodmare_sire_query(sort, limit, min_runners):
     order_map = {
         "prizemoney": "total_prizemoney DESC NULLS LAST",
         "winners": "winners DESC", "win_pct": "win_pct DESC NULLS LAST",
@@ -324,6 +355,10 @@ def broodmare_sire_leaderboard(
 
 @router.get("/breeding/distance-dna")
 def distance_dna(limit: int = 30, min_runners: int = 15):
+    return _cached(f"dna_{limit}_{min_runners}",
+                   lambda: _distance_dna_query(limit, min_runners))
+
+def _distance_dna_query(limit, min_runners):
     eng = _get_racing_engine()
     with eng.connect() as db:
         result = db.execute(text("""
@@ -372,6 +407,10 @@ def distance_dna(limit: int = 30, min_runners: int = 15):
 
 @router.get("/breeding/nicks")
 def nicks(min_runners: int = 2, limit: int = 50):
+    return _cached(f"nicks_{min_runners}_{limit}",
+                   lambda: _nicks_query(min_runners, limit))
+
+def _nicks_query(min_runners, limit):
     eng = _get_racing_engine()
     with eng.connect() as db:
         result = db.execute(text("""
@@ -408,6 +447,10 @@ def nicks(min_runners: int = 2, limit: int = 50):
 
 @router.get("/breeding/sectionals")
 def sectionals(limit: int = 30, min_runs: int = 50):
+    return _cached(f"sect_{limit}_{min_runs}",
+                   lambda: _sectionals_query(limit, min_runs))
+
+def _sectionals_query(limit, min_runs):
     eng = _get_racing_engine()
     with eng.connect() as db:
         result = db.execute(text("""
@@ -437,6 +480,10 @@ def sectionals(limit: int = 30, min_runs: int = 50):
 
 @router.get("/breeding/class-ceiling")
 def class_ceiling(limit: int = 30, min_runners: int = 15):
+    return _cached(f"ceiling_{limit}_{min_runners}",
+                   lambda: _class_ceiling_query(limit, min_runners))
+
+def _class_ceiling_query(limit, min_runners):
     eng = _get_racing_engine()
     with eng.connect() as db:
         result = db.execute(text("""
@@ -487,6 +534,10 @@ def class_ceiling(limit: int = 30, min_runners: int = 15):
 
 @router.get("/tracks")
 def track_stats(state: Optional[str] = None):
+    return _cached(f"tracks_{state}",
+                   lambda: _track_stats_query(state))
+
+def _track_stats_query(state):
     eng = _get_racing_engine()
     with eng.connect() as db:
         sql = """
