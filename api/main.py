@@ -9,6 +9,7 @@ from sqlalchemy import text
 
 from .db import ensure_schema, get_engine
 from .races import races_router
+from .horse_api import router as horse_router
 from .backfill_meeting_ids import canonical_track_name
 
 # Make sure the DB schema exists (safe for Postgres too)
@@ -31,6 +32,9 @@ def health():
 
 # Keep any existing routes defined in api.races (for back-compat)
 app.include_router(races_router)
+
+# Horse search, profiles, breeding analytics, track stats
+app.include_router(horse_router)
 
 
 @app.get("/races")
