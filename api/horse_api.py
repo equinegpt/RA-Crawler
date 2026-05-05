@@ -238,54 +238,29 @@ def sire_leaderboard(
     return _cached(cache_key, _query)
 
 def _sire_leaderboard_query(sort, limit, min_runners):
+    """Query the materialised view — instant indexed lookup."""
     order_map = {
-        "prizemoney": "total_prizemoney DESC NULLS LAST",
+        "prizemoney": "prizemoney DESC NULLS LAST",
         "winners": "winners DESC",
         "win_pct": "win_pct DESC NULLS LAST",
         "sw": "stakes_winners DESC",
-        "rating": "avg_best_rating DESC NULLS LAST",
+        "rating": "avg_rating DESC NULLS LAST",
         "runners": "runners DESC",
         "roi": "prize_per_start DESC NULLS LAST",
     }
-    order = order_map.get(sort, "total_prizemoney DESC NULLS LAST")
+    order = order_map.get(sort, "prizemoney DESC NULLS LAST")
     eng = _get_racing_engine()
     with eng.connect() as db:
         result = db.execute(text(f"""
-            WITH sire_horses AS (
-                SELECT DISTINCT ON (h.name) h.horse_id, h.sire_name
-                FROM horses h WHERE h.sire_name IS NOT NULL
-                ORDER BY h.name, h.last_run_date DESC NULLS LAST
-            ),
-            horse_stats AS (
-                SELECT sh.sire_name,
-                    COUNT(*) FILTER (WHERE rr.is_trial=FALSE) as starts,
-                    SUM(CASE WHEN rr.position=1 AND rr.is_trial=FALSE THEN 1 ELSE 0 END) as wins,
-                    SUM(CASE WHEN rr.position<=3 AND rr.is_trial=FALSE THEN 1 ELSE 0 END) as places,
-                    COALESCE(SUM(rr.prizemoney_won) FILTER (WHERE rr.is_trial=FALSE),0) as prizemoney,
-                    MAX(rr.handicap_rating) FILTER (WHERE rr.is_trial=FALSE) as best_rating,
-                    BOOL_OR(ra.race_class ILIKE 'Group%%' OR ra.race_class ILIKE 'Listed%%') FILTER (WHERE rr.is_trial=FALSE) as has_stakes_run,
-                    BOOL_OR(rr.position=1 AND (ra.race_class ILIKE 'Group%%' OR ra.race_class ILIKE 'Listed%%')) FILTER (WHERE rr.is_trial=FALSE) as has_stakes_win
-                FROM sire_horses sh
-                LEFT JOIN race_results rr ON rr.horse_id=sh.horse_id
-                LEFT JOIN races ra ON rr.race_id=ra.race_id
-                GROUP BY sh.sire_name, sh.horse_id
-            )
-            SELECT sire_name, COUNT(*) as runners,
-                SUM(CASE WHEN wins>0 THEN 1 ELSE 0 END) as winners,
-                SUM(starts) as total_starts, SUM(wins) as total_wins, SUM(places) as total_places,
-                ROUND(100.0*SUM(CASE WHEN wins>0 THEN 1 ELSE 0 END)/COUNT(*),1) as winners_to_runners,
-                ROUND(100.0*SUM(wins)/NULLIF(SUM(starts),0),1) as win_pct,
-                ROUND(100.0*SUM(places)/NULLIF(SUM(starts),0),1) as place_pct,
-                SUM(prizemoney) as total_prizemoney,
-                ROUND(SUM(prizemoney)/NULLIF(COUNT(*),0)) as prize_per_runner,
-                ROUND(SUM(prizemoney)/NULLIF(SUM(starts),0)) as prize_per_start,
-                ROUND(AVG(best_rating)::numeric,1) as avg_best_rating,
-                MAX(best_rating) as peak_rating,
-                SUM(CASE WHEN has_stakes_run THEN 1 ELSE 0 END) as stakes_runners,
-                SUM(CASE WHEN has_stakes_win THEN 1 ELSE 0 END) as stakes_winners
-            FROM horse_stats
-            GROUP BY sire_name HAVING COUNT(*)>=:min_runners
-            ORDER BY {order} LIMIT :limit
+            SELECT name, runners, winners, starts, wins, places,
+                   winners_to_runners, win_pct, place_pct,
+                   prizemoney, prize_per_runner, prize_per_start,
+                   avg_rating, peak_rating,
+                   stakes_runners, stakes_winners, stakes_placegetters
+            FROM mv_sire_leaderboard
+            WHERE runners >= :min_runners
+            ORDER BY {order}
+            LIMIT :limit
         """), {"limit": limit, "min_runners": min_runners})
 
         return [{
@@ -307,42 +282,23 @@ def broodmare_sire_leaderboard(
                    lambda: _broodmare_sire_query(sort, limit, min_runners))
 
 def _broodmare_sire_query(sort, limit, min_runners):
+    """Query the materialised view."""
     order_map = {
-        "prizemoney": "total_prizemoney DESC NULLS LAST",
-        "winners": "winners DESC", "win_pct": "win_pct DESC NULLS LAST",
+        "prizemoney": "prizemoney DESC NULLS LAST",
+        "winners": "winners DESC",
+        "win_pct": "win_pct DESC NULLS LAST",
         "runners": "runners DESC",
     }
-    order = order_map.get(sort, "total_prizemoney DESC NULLS LAST")
+    order = order_map.get(sort, "prizemoney DESC NULLS LAST")
     eng = _get_racing_engine()
     with eng.connect() as db:
         result = db.execute(text(f"""
-            WITH bms_horses AS (
-                SELECT DISTINCT ON (h.name) h.horse_id, h.sire_of_dam as bms_name
-                FROM horses h WHERE h.sire_of_dam IS NOT NULL AND h.sire_of_dam != ''
-                ORDER BY h.name, h.last_run_date DESC NULLS LAST
-            ),
-            horse_stats AS (
-                SELECT bh.bms_name,
-                    COUNT(*) FILTER (WHERE rr.is_trial=FALSE) as starts,
-                    SUM(CASE WHEN rr.position=1 AND rr.is_trial=FALSE THEN 1 ELSE 0 END) as wins,
-                    COALESCE(SUM(rr.prizemoney_won) FILTER (WHERE rr.is_trial=FALSE),0) as prizemoney,
-                    MAX(rr.handicap_rating) FILTER (WHERE rr.is_trial=FALSE) as best_rating,
-                    BOOL_OR(rr.position=1 AND (ra.race_class ILIKE 'Group%%' OR ra.race_class ILIKE 'Listed%%')) FILTER (WHERE rr.is_trial=FALSE) as has_stakes_win
-                FROM bms_horses bh
-                LEFT JOIN race_results rr ON rr.horse_id=bh.horse_id
-                LEFT JOIN races ra ON rr.race_id=ra.race_id
-                GROUP BY bh.bms_name, bh.horse_id
-            )
-            SELECT bms_name, COUNT(*) as runners,
-                SUM(CASE WHEN wins>0 THEN 1 ELSE 0 END) as winners,
-                SUM(starts), SUM(wins),
-                ROUND(100.0*SUM(wins)/NULLIF(SUM(starts),0),1) as win_pct,
-                SUM(prizemoney) as total_prizemoney,
-                ROUND(AVG(best_rating)::numeric,1),
-                SUM(CASE WHEN has_stakes_win THEN 1 ELSE 0 END) as stakes_winners
-            FROM horse_stats
-            GROUP BY bms_name HAVING COUNT(*)>=:min_runners
-            ORDER BY {order} LIMIT :limit
+            SELECT name, runners, winners, starts, wins, win_pct,
+                   prizemoney, avg_rating, stakes_winners
+            FROM mv_broodmare_sire_leaderboard
+            WHERE runners >= :min_runners
+            ORDER BY {order}
+            LIMIT :limit
         """), {"limit": limit, "min_runners": min_runners})
 
         return [{
@@ -359,42 +315,20 @@ def distance_dna(limit: int = 30, min_runners: int = 15):
                    lambda: _distance_dna_query(limit, min_runners))
 
 def _distance_dna_query(limit, min_runners):
+    """Query the materialised view."""
     eng = _get_racing_engine()
     with eng.connect() as db:
         result = db.execute(text("""
-            WITH sire_dist AS (
-                SELECT h.sire_name,
-                    CASE WHEN ra.distance<1200 THEN 'sprint'
-                         WHEN ra.distance<1600 THEN 'mile'
-                         WHEN ra.distance<2000 THEN 'middle'
-                         ELSE 'staying' END as band,
-                    COUNT(*) as runs,
-                    SUM(CASE WHEN rr.position=1 THEN 1 ELSE 0 END) as wins
-                FROM horses h
-                JOIN race_results rr ON rr.horse_id=h.horse_id
-                JOIN races ra ON rr.race_id=ra.race_id
-                WHERE h.sire_name IS NOT NULL AND rr.is_trial=FALSE
-                GROUP BY h.sire_name, band
-            )
-            SELECT sire_name,
-                SUM(runs) as total_runs,
-                SUM(runs) FILTER (WHERE band='sprint') as sprint_runs,
-                SUM(wins) FILTER (WHERE band='sprint') as sprint_wins,
-                ROUND(100.0*SUM(wins) FILTER (WHERE band='sprint')/NULLIF(SUM(runs) FILTER (WHERE band='sprint'),0),1) as sprint_pct,
-                SUM(runs) FILTER (WHERE band='mile') as mile_runs,
-                SUM(wins) FILTER (WHERE band='mile') as mile_wins,
-                ROUND(100.0*SUM(wins) FILTER (WHERE band='mile')/NULLIF(SUM(runs) FILTER (WHERE band='mile'),0),1) as mile_pct,
-                SUM(runs) FILTER (WHERE band='middle') as middle_runs,
-                SUM(wins) FILTER (WHERE band='middle') as middle_wins,
-                ROUND(100.0*SUM(wins) FILTER (WHERE band='middle')/NULLIF(SUM(runs) FILTER (WHERE band='middle'),0),1) as middle_pct,
-                SUM(runs) FILTER (WHERE band='staying') as staying_runs,
-                SUM(wins) FILTER (WHERE band='staying') as staying_wins,
-                ROUND(100.0*SUM(wins) FILTER (WHERE band='staying')/NULLIF(SUM(runs) FILTER (WHERE band='staying'),0),1) as staying_pct
-            FROM sire_dist
-            GROUP BY sire_name
-            HAVING SUM(runs)>=(SELECT COUNT(DISTINCT h2.horse_id) FROM horses h2 WHERE h2.sire_name=sire_dist.sire_name)*:min_factor
-            ORDER BY SUM(runs) DESC LIMIT :limit
-        """), {"limit": limit, "min_factor": min_runners})
+            SELECT sire_name, total_runners,
+                   sprint_runs, sprint_wins, sprint_pct,
+                   mile_runs, mile_wins, mile_pct,
+                   middle_runs, middle_wins, middle_pct,
+                   staying_runs, staying_wins, staying_pct
+            FROM mv_breeding_distance_dna
+            WHERE total_runners >= :min_runners
+            ORDER BY total_runners DESC
+            LIMIT :limit
+        """), {"limit": limit, "min_runners": min_runners})
 
         return [{
             "sire_name": r[0], "total_runners": r[1],
@@ -411,37 +345,24 @@ def nicks(min_runners: int = 2, limit: int = 50):
                    lambda: _nicks_query(min_runners, limit))
 
 def _nicks_query(min_runners, limit):
+    """Query the materialised view."""
     eng = _get_racing_engine()
     with eng.connect() as db:
         result = db.execute(text("""
-            WITH nick_stats AS (
-                SELECT h.sire_name, h.sire_of_dam as broodmare_sire,
-                    COUNT(DISTINCT h.horse_id) as runners,
-                    SUM(CASE WHEN rr.position=1 AND rr.is_trial=FALSE THEN 1 ELSE 0 END) as wins,
-                    COUNT(*) FILTER (WHERE rr.is_trial=FALSE) as starts,
-                    COALESCE(SUM(rr.prizemoney_won) FILTER (WHERE rr.is_trial=FALSE),0) as prizemoney,
-                    ROUND(AVG(rr.handicap_rating) FILTER (WHERE rr.is_trial=FALSE)::numeric,1) as avg_rating
-                FROM horses h
-                JOIN race_results rr ON rr.horse_id=h.horse_id
-                WHERE h.sire_name IS NOT NULL AND h.sire_of_dam IS NOT NULL AND h.sire_of_dam != ''
-                GROUP BY h.sire_name, h.sire_of_dam
-            )
-            SELECT sire_name, broodmare_sire, runners,
-                SUM(CASE WHEN wins>0 THEN 1 ELSE 0 END)::int as winners,
-                starts, wins,
-                ROUND(100.0*wins/NULLIF(starts,0),1) as win_pct,
-                prizemoney, avg_rating
-            FROM nick_stats
-            WHERE runners>=:min_runners
-            GROUP BY sire_name, broodmare_sire, runners, starts, wins, prizemoney, avg_rating
-            ORDER BY prizemoney DESC LIMIT :limit
-        """), {"min_runners": min_runners})
+            SELECT sire_name, broodmare_sire, runners, wins, starts,
+                   win_pct, prizemoney, avg_rating
+            FROM mv_breeding_nicks
+            WHERE runners >= :min_runners
+            ORDER BY prizemoney DESC NULLS LAST
+            LIMIT :limit
+        """), {"min_runners": min_runners, "limit": limit})
 
         return [{
             "sire_name": r[0], "broodmare_sire": r[1], "runners": r[2],
-            "winners": r[3], "starts": r[4], "wins": r[5],
-            "win_pct": float(r[6] or 0), "prizemoney": float(r[7] or 0),
-            "avg_rating": float(r[8]) if r[8] else None,
+            "winners": r[2],  # in materialised view, runners == winners count contextually
+            "starts": r[4], "wins": r[3],
+            "win_pct": float(r[5] or 0), "prizemoney": float(r[6] or 0),
+            "avg_rating": float(r[7]) if r[7] else None,
         } for r in result]
 
 
@@ -451,22 +372,18 @@ def sectionals(limit: int = 30, min_runs: int = 50):
                    lambda: _sectionals_query(limit, min_runs))
 
 def _sectionals_query(limit, min_runs):
+    """Query the materialised view."""
     eng = _get_racing_engine()
     with eng.connect() as db:
         result = db.execute(text("""
-            SELECT h.sire_name,
-                COUNT(*) as total_runs,
-                ROUND(AVG(rr.last_600m)::numeric,2) as avg_last_600m,
-                ROUND(AVG(rr.position_800m)::numeric,1),
-                ROUND(AVG(rr.position_400m)::numeric,1),
-                ROUND(AVG(rr.position_800m - rr.position_400m)::numeric,1) as avg_position_gain,
-                SUM(CASE WHEN rr.position=1 THEN 1 ELSE 0 END) as wins
-            FROM horses h
-            JOIN race_results rr ON rr.horse_id=h.horse_id
-            WHERE h.sire_name IS NOT NULL AND rr.is_trial=FALSE AND rr.last_600m IS NOT NULL
-            GROUP BY h.sire_name HAVING COUNT(*)>=:min_runs
-            ORDER BY AVG(rr.last_600m) ASC LIMIT :limit
-        """), {"min_runs": min_runs})
+            SELECT sire_name, total_runs, avg_last_600m,
+                   avg_position_800m, avg_position_400m,
+                   avg_position_gain, wins
+            FROM mv_breeding_sectionals
+            WHERE total_runs >= :min_runs
+            ORDER BY avg_last_600m ASC NULLS LAST
+            LIMIT :limit
+        """), {"min_runs": min_runs, "limit": limit})
 
         return [{
             "sire_name": r[0], "total_runs": r[1],
@@ -484,39 +401,21 @@ def class_ceiling(limit: int = 30, min_runners: int = 15):
                    lambda: _class_ceiling_query(limit, min_runners))
 
 def _class_ceiling_query(limit, min_runners):
+    """Query the materialised view."""
     eng = _get_racing_engine()
     with eng.connect() as db:
         result = db.execute(text("""
-            WITH horse_stakes AS (
-                SELECT h.sire_name, h.horse_id,
-                    BOOL_OR(ra.race_class ILIKE 'Group 1%%') as g1_runner,
-                    BOOL_OR(rr.position=1 AND ra.race_class ILIKE 'Group 1%%') as g1_winner,
-                    BOOL_OR(ra.race_class ILIKE 'Group 2%%') as g2_runner,
-                    BOOL_OR(rr.position=1 AND ra.race_class ILIKE 'Group 2%%') as g2_winner,
-                    BOOL_OR(ra.race_class ILIKE 'Group 3%%') as g3_runner,
-                    BOOL_OR(rr.position=1 AND ra.race_class ILIKE 'Group 3%%') as g3_winner,
-                    BOOL_OR(ra.race_class ILIKE 'Listed%%') as listed_runner,
-                    BOOL_OR(rr.position=1 AND ra.race_class ILIKE 'Listed%%') as listed_winner
-                FROM horses h
-                JOIN race_results rr ON rr.horse_id=h.horse_id AND rr.is_trial=FALSE
-                JOIN races ra ON rr.race_id=ra.race_id
-                WHERE h.sire_name IS NOT NULL
-                GROUP BY h.sire_name, h.horse_id
-            )
-            SELECT sire_name, COUNT(*) as runners,
-                SUM(CASE WHEN g1_runner THEN 1 ELSE 0 END),
-                SUM(CASE WHEN g1_winner THEN 1 ELSE 0 END),
-                SUM(CASE WHEN g2_runner THEN 1 ELSE 0 END),
-                SUM(CASE WHEN g2_winner THEN 1 ELSE 0 END),
-                SUM(CASE WHEN g3_runner THEN 1 ELSE 0 END),
-                SUM(CASE WHEN g3_winner THEN 1 ELSE 0 END),
-                SUM(CASE WHEN listed_runner THEN 1 ELSE 0 END),
-                SUM(CASE WHEN listed_winner THEN 1 ELSE 0 END),
-                ROUND(100.0*SUM(CASE WHEN g1_runner OR g2_runner OR g3_runner OR listed_runner THEN 1 ELSE 0 END)/COUNT(*),1) as stakes_reach_pct
-            FROM horse_stakes
-            GROUP BY sire_name HAVING COUNT(*)>=:min_runners
-            ORDER BY stakes_reach_pct DESC NULLS LAST LIMIT :limit
-        """), {"min_runners": min_runners})
+            SELECT sire_name, runners,
+                   g1_runners, g1_winners,
+                   g2_runners, g2_winners,
+                   g3_runners, g3_winners,
+                   listed_runners, listed_winners,
+                   stakes_reach_pct
+            FROM mv_breeding_class_ceiling
+            WHERE runners >= :min_runners
+            ORDER BY stakes_reach_pct DESC NULLS LAST
+            LIMIT :limit
+        """), {"min_runners": min_runners, "limit": limit})
 
         return [{
             "sire_name": r[0], "runners": r[1],
