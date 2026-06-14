@@ -135,6 +135,10 @@ def canonical_track_name(raw: str) -> str:
         "aquis",
         "tabtouch",
         "tab ",
+        # "Southside" is a Cranbourne-Training-Centre regional brand that RA
+        # uses as a prefix for Pakenham/Cranbourne meetings (incl. Synthetic).
+        # PF strips it; stripping here keeps both sides aligned.
+        "southside",
     ]
     for sp in sponsors:
         s = s.replace(sp, "")
