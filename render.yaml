@@ -13,15 +13,20 @@ services:
       mountPath: /data
       sizeGB: 1
 
-# New: a cron job that runs once daily at 03:00 UTC
-# (That’s 1pm Melbourne during AEST, 2pm during AEDT. Our script uses AU/Melbourne for cleanup.)
+# Cron: scrape results daily at 23:00 Melbourne — LATE enough that all AU
+# metro/country + Sha Tin (HK) + NZ meetings have finished + racing.com has
+# published finals. 2026-07-01: was "0 3 * * *" (13:00 AEST = 1pm) which
+# was too early — caught only morning races. Downstream settle_results at
+# 19:00 AEST was consequently getting empty ra_results and settling 24h late.
+# 23:00 AEST = 13:00 UTC in winter (AEST/UTC+10). In summer (AEDT/UTC+11)
+# it'll fire at 00:00 AEDT next day — still safely post-race for that day.
 jobs:
   - type: cron
     name: ra-daily-crawl
     env: python
     buildCommand: pip install -r requirements.txt
     startCommand: bash scripts/daily.sh
-    schedule: "0 3 * * *"   # 03:00 UTC every day
+    schedule: "0 13 * * *"   # 13:00 UTC = 23:00 AEST (11pm Melbourne)
     envVars:
       - key: DATABASE_URL
         value: sqlite:////data/racing.db
