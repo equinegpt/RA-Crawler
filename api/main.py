@@ -486,14 +486,18 @@ def debug_racenet_nuxt(path: str):
     # markers + grabbing small samples answers the scoping question.
     html = resp.text
     counts = {}
-    for marker in ("window.__NUXT__", "fixedOdds", "bookmaker", "tabtouch",
-                   '"odds"', "currentOdds", "bestOdds", "oddsComparison",
-                   '"tab"', "openingOdds", "flucs"):
+    for marker in ("window.__NUXT__", "bookmaker", "bestOdds",
+                   "/bet/tab/", "/bet/ubet/", "/bet/tabtouch/",
+                   "/bet/sportsbet/", "/bet/ladbrokes/", "/bet/bet365/",
+                   "/bet/neds/", "/bet/betr/", "/bet/colossalbet/",
+                   "/bet/pointsbet/"):
         counts[marker] = html.count(marker)
     samples = []
-    for m in _re.finditer(r'.{60}(?:fixedOdds|currentOdds|bestOdds|openingOdds)'
-                          r'.{160}', html):
-        samples.append(m.group(0))
+    # grab an odds cell WITH its displayed price around tab/sportsbet links
+    for m in _re.finditer(r'/bet/(?:tab|ubet|sportsbet)/\d+.{0,400}?', html):
+        seg = html[m.start():m.start() + 500]
+        px = _re.findall(r'>\s*\$?(\d{1,3}\.\d{2})\s*<', seg)
+        samples.append({"link": m.group(0)[:40], "prices_nearby": px[:4]})
         if len(samples) >= 4:
             break
     return {"ok": True, "bytes": len(html), "counts": counts,
