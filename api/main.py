@@ -330,11 +330,12 @@ def backfill_dividends_racenet(
     results = []
     d = start
     while d <= end:
+        detail: list = []
         try:
-            count = _racenet_fetch(d)
-            results.append({"date": d.isoformat(), "dividends": count})
+            count = _racenet_fetch(d, detail=detail)
+            results.append({"date": d.isoformat(), "dividends": count, "detail": detail})
         except Exception as e:
-            results.append({"date": d.isoformat(), "error": str(e)})
+            results.append({"date": d.isoformat(), "error": str(e), "detail": detail})
         d += timedelta(days=1)
     total = sum(r.get("dividends", 0) for r in results)
     return {"ok": True, "total_dividends": total, "days": results}

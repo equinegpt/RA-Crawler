@@ -96,12 +96,11 @@ def fetch_meeting_dividends(meeting_date: date, track: str,
     url = f"{RACENET_BASE}/{slug}-{meeting_date.strftime('%Y%m%d')}"
     resp = scraper_get(url, timeout=60)
     if resp is None or resp.status_code != 200:
-        print(f"[racenet-div] {url} -> HTTP {getattr(resp, 'status_code', '?')}")
-        return []
+        raise RuntimeError(f"{url} -> HTTP {getattr(resp, 'status_code', '?')} "
+                           f"body[:80]={getattr(resp, 'text', '')[:80]!r}")
     nuxt = _extract_nuxt_state(resp.text)
     if not nuxt:
-        print(f"[racenet-div] {url} -> no __NUXT__ state")
-        return []
+        raise RuntimeError(f"{url} -> {len(resp.text)}b but no parsable __NUXT__ state")
 
     rows: List[Dict] = []
     for blob in nuxt.get("data") or []:
@@ -159,8 +158,12 @@ def save_dividends(rows: List[Dict]) -> int:
         session.close()
 
 
-def fetch_for_date(meeting_date: date) -> int:
-    """All meetings for a date (from ra_results tracks) -> race_dividends."""
+def fetch_for_date(meeting_date: date, detail: Optional[list] = None) -> int:
+    """All meetings for a date (from ra_results tracks) -> race_dividends.
+
+    detail: optional list — per-meeting outcome dicts are appended for
+    debugging (surfaced by the backfill endpoint).
+    """
     session = SessionLocal()
     try:
         tracks = session.execute(text("""
@@ -169,11 +172,18 @@ def fetch_for_date(meeting_date: date) -> int:
         """), {"d": meeting_date.isoformat()}).fetchall()
     finally:
         session.close()
+    if detail is not None and not tracks:
+        detail.append({"note": "no ra_results tracks for this date"})
     total = 0
     for state, track in tracks:
         try:
             rows = fetch_meeting_dividends(meeting_date, track, state)
-            total += save_dividends(rows)
+            n = save_dividends(rows)
+            total += n
+            if detail is not None:
+                detail.append({"track": track, "slug": _slug(track), "rows": n})
         except Exception as e:
             print(f"[racenet-div] {track} {meeting_date} FAILED: {e}")
+            if detail is not None:
+                detail.append({"track": track, "error": f"{type(e).__name__}: {e}"})
     return total
