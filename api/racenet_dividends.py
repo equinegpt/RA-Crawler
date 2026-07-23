@@ -110,13 +110,27 @@ def fetch_meeting_dividends(meeting_date: date, track: str,
             exotics = ev.get("exoticResult") or []
             if not race_no or not exotics:
                 continue
-            # group by market type; conservative MIN across totes
+            # group by market type; conservative MIN across totes.
+            # Whitelist (2026-07-23 review): only the markets we model.
+            # Quaddie is deliberately IN — Racenet's state DOES carry it on
+            # designated-leg meetings (11 rows on 2026-07-11), despite the
+            # early sample showing none. Unlisted markets (e.g. a 12-char
+            # "Daily Double") previously risked a VARCHAR(10) overflow that
+            # silently zeroed the whole meeting via the per-meeting except.
+            # Positivity floor: a void tote reporting amount=0 must never
+            # become the stored min — $0 dividends deflate every fair-vs-
+            # paid calibration downstream.
             by_type: Dict[str, Dict] = {}
             for x in exotics:
                 mkt = x.get("exoticMarket")
+                if mkt not in ("Quinella", "Exacta", "Trifecta",
+                               "FirstFour", "Quaddie"):
+                    continue
                 try:
                     amt = float(x.get("amount"))
                 except (TypeError, ValueError):
+                    continue
+                if amt <= 0:
                     continue
                 combo = (x.get("results") or "").replace(",", "-")
                 cur = by_type.get(mkt)
