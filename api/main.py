@@ -476,29 +476,25 @@ def debug_racenet_nuxt(path: str):
     if not _re.match(r"^/[a-zA-Z0-9\-_/]*$", path or ""):
         raise HTTPException(status_code=400, detail="bad path")
     from .scraper_proxy import scraper_get
-    from .racenet_dividends import _extract_nuxt_state
     url = "https://www.racenet.com.au" + path
     resp = scraper_get(url, timeout=60)
     if resp is None or resp.status_code != 200:
         return {"ok": False, "http": getattr(resp, "status_code", None),
                 "bytes": len(getattr(resp, "text", "") or "")}
-    nuxt = _extract_nuxt_state(resp.text)
-    if not nuxt:
-        return {"ok": False, "http": 200, "bytes": len(resp.text),
-                "nuxt": False}
-    found: dict = {}
-    def walk(o, p, depth):
-        if depth > 12 or len(found) > 60:
-            return
-        if isinstance(o, dict):
-            for k, v in o.items():
-                if _re.search(r"odds|price|bookmaker|fluc|tab", k, _re.I):
-                    key = f"{p}.{k}"
-                    if k not in {x.split(".")[-1] for x in found}:
-                        found[key] = (str(v)[:80] if not isinstance(v, (dict, list))
-                                      else f"<{type(v).__name__} len={len(v)}>")
-                walk(v, f"{p}.{k}", depth + 1)
-        elif isinstance(o, list) and o:
-            walk(o[0], p + "[0]", depth + 1)
-    walk(nuxt, "", 0)
-    return {"ok": True, "bytes": len(resp.text), "keys": found}
+    # Lightweight REGEX scan only — evaluating multi-MB form-guide __NUXT__
+    # states via quickjs OOM-kills the 512MB worker (502s). Counting key
+    # markers + grabbing small samples answers the scoping question.
+    html = resp.text
+    counts = {}
+    for marker in ("window.__NUXT__", "fixedOdds", "bookmaker", "tabtouch",
+                   '"odds"', "currentOdds", "bestOdds", "oddsComparison",
+                   '"tab"', "openingOdds", "flucs"):
+        counts[marker] = html.count(marker)
+    samples = []
+    for m in _re.finditer(r'.{60}(?:fixedOdds|currentOdds|bestOdds|openingOdds)'
+                          r'.{160}', html):
+        samples.append(m.group(0))
+        if len(samples) >= 4:
+            break
+    return {"ok": True, "bytes": len(html), "counts": counts,
+            "samples": samples}
