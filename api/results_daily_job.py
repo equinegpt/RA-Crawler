@@ -33,6 +33,19 @@ def main() -> int:
         except Exception as exc:
             print(f"[results_daily_job] SB exotics ERROR for {d}: {exc}")
 
+    # Step 2b (2026-07-23): exotic dividends from Racenet — the path that
+    # actually populates race_dividends. One page per meeting, __NUXT__ state
+    # eval via quickjs, all races x Q/E/T/FirstFour, min-across-totes. The SB
+    # path above has never written a row (SPA + event-cache dependencies);
+    # kept for reference until Racenet has a fortnight of clean nightly runs.
+    from .racenet_dividends import fetch_for_date as racenet_fetch_for_date
+    for d in (today, yesterday):
+        try:
+            count = racenet_fetch_for_date(d)
+            print(f"[results_daily_job] Racenet dividends for {d}: {count} rows")
+        except Exception as exc:
+            print(f"[results_daily_job] Racenet dividends ERROR for {d}: {exc}")
+
     # Step 3: Trigger TRS to match results to tips (creates TipOutcome rows)
     import httpx
     trs_base = os.environ.get("TRS_BASE_URL", "https://tips-results-service.onrender.com")

@@ -311,6 +311,35 @@ def backfill_exotics(
     return {"ok": True, "total_dividends": total, "days": results}
 
 
+@app.post("/backfill-dividends-racenet")
+def backfill_dividends_racenet(
+    start_date: str = Query(..., alias="start"),
+    end_date: str = Query(..., alias="end"),
+):
+    """
+    Backfill exotic dividends from Racenet for a date range (inclusive).
+    One page per meeting per day; rows land in race_dividends
+    (min-across-totes, Quinella/Exacta/Trifecta/FirstFour).
+    e.g. POST /backfill-dividends-racenet?start=2026-06-21&end=2026-07-23
+    """
+    from datetime import date as _date, timedelta
+    from .racenet_dividends import fetch_for_date as _racenet_fetch
+
+    start = _date.fromisoformat(start_date)
+    end = _date.fromisoformat(end_date)
+    results = []
+    d = start
+    while d <= end:
+        try:
+            count = _racenet_fetch(d)
+            results.append({"date": d.isoformat(), "dividends": count})
+        except Exception as e:
+            results.append({"date": d.isoformat(), "error": str(e)})
+        d += timedelta(days=1)
+    total = sum(r.get("dividends", 0) for r in results)
+    return {"ok": True, "total_dividends": total, "days": results}
+
+
 @app.post("/cache-sb-events")
 def cache_sb_events(
     meeting_date: Optional[str] = Query(None, alias="date"),
