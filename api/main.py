@@ -462,3 +462,43 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("api.main:app", host="0.0.0.0", port=8001, reload=True)
+
+
+@app.get("/debug/racenet-nuxt")
+def debug_racenet_nuxt(path: str):
+    """TEMP probe (2026-07-24, live-price feed scoping): fetch ONE
+    racenet.com.au page via Scrape.do, eval its window.__NUXT__ state and
+    report which odds/price-ish keys it contains. Domain-locked to
+    racenet.com.au paths — this is a structure probe, not a proxy.
+    Remove once the odds module ships."""
+    import re as _re
+    from fastapi import HTTPException
+    if not _re.match(r"^/[a-zA-Z0-9\-_/]*$", path or ""):
+        raise HTTPException(status_code=400, detail="bad path")
+    from .scraper_proxy import scraper_get
+    from .racenet_dividends import _extract_nuxt_state
+    url = "https://www.racenet.com.au" + path
+    resp = scraper_get(url, timeout=60)
+    if resp is None or resp.status_code != 200:
+        return {"ok": False, "http": getattr(resp, "status_code", None),
+                "bytes": len(getattr(resp, "text", "") or "")}
+    nuxt = _extract_nuxt_state(resp.text)
+    if not nuxt:
+        return {"ok": False, "http": 200, "bytes": len(resp.text),
+                "nuxt": False}
+    found: dict = {}
+    def walk(o, p, depth):
+        if depth > 12 or len(found) > 60:
+            return
+        if isinstance(o, dict):
+            for k, v in o.items():
+                if _re.search(r"odds|price|bookmaker|fluc|tab", k, _re.I):
+                    key = f"{p}.{k}"
+                    if k not in {x.split(".")[-1] for x in found}:
+                        found[key] = (str(v)[:80] if not isinstance(v, (dict, list))
+                                      else f"<{type(v).__name__} len={len(v)}>")
+                walk(v, f"{p}.{k}", depth + 1)
+        elif isinstance(o, list) and o:
+            walk(o[0], p + "[0]", depth + 1)
+    walk(nuxt, "", 0)
+    return {"ok": True, "bytes": len(resp.text), "keys": found}
