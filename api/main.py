@@ -500,5 +500,8 @@ def debug_racenet_nuxt(path: str):
         samples.append({"link": m.group(0)[:40], "prices_nearby": px[:4]})
         if len(samples) >= 4:
             break
+    racelinks = sorted({m.group(0) for m in _re.finditer(
+        r"/form-guide/horse-racing/[a-z0-9\-]+/[a-z0-9\-]*race-\d+[a-z0-9\-/]*",
+        html)})[:12]
     return {"ok": True, "bytes": len(html), "counts": counts,
-            "samples": samples}
+            "samples": samples, "racelinks": racelinks}
