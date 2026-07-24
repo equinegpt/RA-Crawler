@@ -503,5 +503,13 @@ def debug_racenet_nuxt(path: str):
     racelinks = sorted({m.group(0) for m in _re.finditer(
         r"/form-guide/horse-racing/[a-z0-9\-]+/[a-z0-9\-]*race-\d+[a-z0-9\-/]*",
         html)})[:12]
-    return {"ok": True, "bytes": len(html), "counts": counts,
-            "samples": samples, "racelinks": racelinks}
+    out = {"ok": True, "bytes": len(html), "counts": counts,
+           "samples": samples, "racelinks": racelinks}
+    if request_raw := ("/bet/" in html):
+        # dev aid: return the odds-table region (first->last /bet/ link,
+        # capped) so the parser can be written offline against real markup.
+        i, j = html.find("/bet/"), html.rfind("/bet/")
+        lo = max(0, i - 3000)
+        out["odds_region_b64"] = __import__("base64").b64encode(
+            html[lo:min(j + 500, lo + 400_000)].encode()).decode()
+    return out
