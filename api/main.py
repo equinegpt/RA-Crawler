@@ -520,9 +520,14 @@ def sweep_racenet_odds(date_param: Optional[str] = Query(None, alias="date")):
     """Sweep live Best-Odds prices from Racenet form-guide race pages into
     racenet_odds. Cadence driven by Pi timers: 08:15 / 12:00 / pre-race.
     See api/racenet_odds.py for the why (SkyNet price-attach incident)."""
-    from datetime import date as _date
+    from datetime import date as _date, datetime as _dt
+    from zoneinfo import ZoneInfo
     from .racenet_odds import sweep as _sweep
-    d = _date.fromisoformat(date_param) if date_param else _date.today()
+    # Default = MELBOURNE today, not server-UTC today: before 10:00 AEST the
+    # UTC date is still yesterday, which made the 08:15 Pi sweep re-sweep
+    # the previous day's card (caught live 2026-07-25 05:00).
+    d = (_date.fromisoformat(date_param) if date_param
+         else _dt.now(ZoneInfo("Australia/Melbourne")).date())
     detail: list = []
     total = _sweep(d, detail=detail)
     return {"ok": True, "date": d.isoformat(), "runner_prices": total,
@@ -532,9 +537,11 @@ def sweep_racenet_odds(date_param: Optional[str] = Query(None, alias="date")):
 @app.get("/odds-latest")
 def odds_latest(date_param: Optional[str] = Query(None, alias="date")):
     """Freshest Racenet Best-Odds price per (track, race, tab) for a date."""
-    from datetime import date as _date
+    from datetime import date as _date, datetime as _dt
+    from zoneinfo import ZoneInfo
     from .racenet_odds import latest_odds
-    d = _date.fromisoformat(date_param) if date_param else _date.today()
+    d = (_date.fromisoformat(date_param) if date_param
+         else _dt.now(ZoneInfo("Australia/Melbourne")).date())
     rows = latest_odds(d)
     for r in rows:
         if hasattr(r.get("swept_at"), "isoformat"):
