@@ -513,3 +513,30 @@ def debug_racenet_nuxt(path: str):
         out["odds_region_b64"] = __import__("base64").b64encode(
             html[lo:min(j + 500, lo + 400_000)].encode()).decode()
     return out
+
+
+@app.post("/sweep-racenet-odds")
+def sweep_racenet_odds(date_param: Optional[str] = Query(None, alias="date")):
+    """Sweep live Best-Odds prices from Racenet form-guide race pages into
+    racenet_odds. Cadence driven by Pi timers: 08:15 / 12:00 / pre-race.
+    See api/racenet_odds.py for the why (SkyNet price-attach incident)."""
+    from datetime import date as _date
+    from .racenet_odds import sweep as _sweep
+    d = _date.fromisoformat(date_param) if date_param else _date.today()
+    detail: list = []
+    total = _sweep(d, detail=detail)
+    return {"ok": True, "date": d.isoformat(), "runner_prices": total,
+            "pages": detail}
+
+
+@app.get("/odds-latest")
+def odds_latest(date_param: Optional[str] = Query(None, alias="date")):
+    """Freshest Racenet Best-Odds price per (track, race, tab) for a date."""
+    from datetime import date as _date
+    from .racenet_odds import latest_odds
+    d = _date.fromisoformat(date_param) if date_param else _date.today()
+    rows = latest_odds(d)
+    for r in rows:
+        if hasattr(r.get("swept_at"), "isoformat"):
+            r["swept_at"] = r["swept_at"].isoformat()
+    return {"date": d.isoformat(), "count": len(rows), "odds": rows}
