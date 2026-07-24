@@ -42,7 +42,12 @@ INDEX = f"{BASE}/form-guide"
 
 # international meetings carry a country suffix in the slug (ankara-tr,
 # newbury-uk ...). We keep AU (no suffix) + NZ.
-_FOREIGN = re.compile(r"-(tr|uk|fr|jp|hk|sgp|us|za|de|ie|arg|cl)-?\d*$")
+_FOREIGN = re.compile(
+    r"-(tr|uk|fr|jp|hk|sgp|us|za|de|ie|ire|ca|arg|cl|usa|swe|nor)-?\d*$")
+# NOTE: some internationals carry NO suffix (La Zarzuela, Hipodromo
+# Presidente Remon — ~64 wasted pages on 2026-07-24). Proper fix is a
+# cross-check against the day's PF meetings; suffix list is the cheap
+# 90% for now. NZ (-nz) is deliberately KEPT (Waverley etc are carded).
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS racenet_odds (
