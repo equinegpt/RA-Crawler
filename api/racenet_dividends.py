@@ -91,12 +91,25 @@ def _extract_nuxt_state(html: str) -> Optional[dict]:
 
 def fetch_meeting_dividends(meeting_date: date, track: str,
                             state: Optional[str] = None) -> List[Dict]:
-    """Fetch + parse one meeting's exotic dividends. Returns row dicts."""
-    slug = _slug(track)
-    url = f"{RACENET_BASE}/{slug}-{meeting_date.strftime('%Y%m%d')}"
-    resp = scraper_get(url, timeout=60)
+    """Fetch + parse one meeting's exotic dividends. Returns row dicts.
+
+    Slug fallback (2026-08-02): Racenet's results slug is the meeting's
+    official name OF THE DAY and drifts — 2026-08-01 served
+    rosehill-gardens/morphettville-parks where the Jun-Jul backfills used
+    rosehill/morphettville. Try the mapped short slug first (bulk of
+    history), then the full-name slug on 404 before giving up."""
+    ymd = meeting_date.strftime("%Y%m%d")
+    full = re.sub(r"[^a-z0-9]+", "-", (track or "").lower().strip()).strip("-")
+    slugs = list(dict.fromkeys([_slug(track), full]))
+    resp, url = None, ""
+    for slug in slugs:
+        url = f"{RACENET_BASE}/{slug}-{ymd}"
+        resp = scraper_get(url, timeout=60)
+        if resp is not None and resp.status_code == 200:
+            break
     if resp is None or resp.status_code != 200:
-        raise RuntimeError(f"{url} -> HTTP {getattr(resp, 'status_code', '?')} "
+        raise RuntimeError(f"{url} (tried {slugs}) -> "
+                           f"HTTP {getattr(resp, 'status_code', '?')} "
                            f"body[:80]={getattr(resp, 'text', '')[:80]!r}")
     nuxt = _extract_nuxt_state(resp.text)
     if not nuxt:
