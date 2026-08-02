@@ -529,7 +529,14 @@ def sweep_racenet_odds(date_param: Optional[str] = Query(None, alias="date")):
     d = (_date.fromisoformat(date_param) if date_param
          else _dt.now(ZoneInfo("Australia/Melbourne")).date())
     detail: list = []
-    total = _sweep(d, detail=detail)
+    # Structured error, never a bare 500: the 2026-08-01 Racenet anti-bot
+    # blocks surfaced as "Internal Server Error" with zero diagnostics —
+    # the Pi timer logs need to show WHAT failed.
+    try:
+        total = _sweep(d, detail=detail)
+    except Exception as e:
+        return {"ok": False, "date": d.isoformat(), "runner_prices": 0,
+                "error": f"{type(e).__name__}: {e}", "pages": detail}
     return {"ok": True, "date": d.isoformat(), "runner_prices": total,
             "pages": detail}
 

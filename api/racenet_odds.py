@@ -73,10 +73,27 @@ def _ensure_table(session) -> None:
     session.commit()
 
 
-def discover_race_paths(meeting_date: date) -> List[str]:
+# Sweep-scoped fetch with STICKY residential escalation (2026-08-02:
+# Racenet 202-challenges datacenter IPs; once one page challenges, every
+# page will — flip to super for the rest of the run instead of paying the
+# failed-plain-fetch latency ~50 more times). dict so it's mutable/shared.
+def _swept_get(url: str, state: dict, timeout: int = 60):
+    resp = scraper_get(url, timeout=timeout, super_=state.get("super", False),
+                       auto_super=False)
+    if (not state.get("super")
+            and resp is not None and resp.status_code in (202, 401, 403, 429)):
+        state["super"] = True
+        print(f"[racenet-odds] challenge HTTP {resp.status_code} — "
+              f"escalating sweep to residential (super=true)")
+        resp = scraper_get(url, timeout=timeout, super_=True, auto_super=False)
+    return resp
+
+
+def discover_race_paths(meeting_date: date,
+                        state: Optional[dict] = None) -> List[str]:
     """Race-page paths for the date from the form-guide index (Racenet's
     own hrefs — no slug guessing, which is what soft-404'd meeting URLs)."""
-    resp = scraper_get(INDEX, timeout=60)
+    resp = _swept_get(INDEX, state if state is not None else {}, timeout=90)
     if resp is None or resp.status_code != 200:
         raise RuntimeError(f"index -> HTTP {getattr(resp, 'status_code', '?')}")
     ymd = meeting_date.strftime("%Y%m%d")
@@ -126,8 +143,9 @@ def sweep(meeting_date: date, paths: Optional[List[str]] = None,
           detail: Optional[list] = None) -> int:
     """Fetch + parse race pages, insert one row per runner. Returns rows."""
     ymd = meeting_date.strftime("%Y%m%d")
+    state: dict = {"super": False}
     if paths is None:
-        paths = discover_race_paths(meeting_date)
+        paths = discover_race_paths(meeting_date, state)
     session = SessionLocal()
     total = 0
     try:
@@ -137,7 +155,7 @@ def sweep(meeting_date: date, paths: Optional[List[str]] = None,
             rn = re.search(r"race-(\d+)", p.rsplit("/", 2)[-2] if p.endswith("/overview") else p)
             race_no = int(rn.group(1)) if rn else 0
             try:
-                resp = scraper_get(BASE + p, timeout=60)
+                resp = _swept_get(BASE + p, state, timeout=60)
                 if resp is None or resp.status_code != 200:
                     raise RuntimeError(f"HTTP {getattr(resp, 'status_code', '?')}")
                 runners = parse_race_page(resp.text)
