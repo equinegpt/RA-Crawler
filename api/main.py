@@ -542,14 +542,17 @@ def sweep_racenet_odds(date_param: Optional[str] = Query(None, alias="date")):
 
 
 @app.get("/odds-latest")
-def odds_latest(date_param: Optional[str] = Query(None, alias="date")):
-    """Freshest Racenet Best-Odds price per (track, race, tab) for a date."""
+def odds_latest(date_param: Optional[str] = Query(None, alias="date"),
+                tick: Optional[str] = Query("last")):
+    """Racenet Best-Odds price per (track, race, tab) for a date.
+    tick=last (default) = freshest; tick=first = earliest sweep of the
+    day (opening semantics, used by lifeboat training frames)."""
     from datetime import date as _date, datetime as _dt
     from zoneinfo import ZoneInfo
     from .racenet_odds import latest_odds
     d = (_date.fromisoformat(date_param) if date_param
          else _dt.now(ZoneInfo("Australia/Melbourne")).date())
-    rows = latest_odds(d)
+    rows = latest_odds(d, tick="first" if tick == "first" else "last")
     for r in rows:
         if hasattr(r.get("swept_at"), "isoformat"):
             r["swept_at"] = r["swept_at"].isoformat()

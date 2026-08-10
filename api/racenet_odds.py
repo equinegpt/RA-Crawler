@@ -185,18 +185,25 @@ def sweep(meeting_date: date, paths: Optional[List[str]] = None,
     return total
 
 
-def latest_odds(meeting_date: date) -> List[Dict]:
-    """Freshest price per (track, race, tab) for the date."""
+def latest_odds(meeting_date: date, tick: str = "last") -> List[Dict]:
+    """One price per (track, race, tab) for the date.
+
+    tick="last" (default) is the freshest price — what the engine wants.
+    tick="first" is the EARLIEST sweep of the day — opening-price
+    semantics for training frames, where a late tick would leak
+    near-jump sharpness into a feature trained as the morning open.
+    """
+    order = "ASC" if tick == "first" else "DESC"
     session = SessionLocal()
     try:
         _ensure_table(session)
-        rows = session.execute(text("""
+        rows = session.execute(text(f"""
             SELECT DISTINCT ON (track, race_no, tab_no)
                    track, race_no, tab_no, horse, book, price,
                    swept_at
             FROM racenet_odds
             WHERE meeting_date = :d
-            ORDER BY track, race_no, tab_no, swept_at DESC"""),
+            ORDER BY track, race_no, tab_no, swept_at {order}"""),
             {"d": meeting_date.isoformat()}).mappings().all()
         return [dict(r) for r in rows]
     finally:
