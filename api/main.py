@@ -558,12 +558,22 @@ def tab_map(date_param: Optional[str] = Query(None, alias="date")):
     url = (f"https://api.beta.tab.com.au/v1/tab-info-service/racing/"
            f"dates/{d.isoformat()}/meetings?jurisdiction=NSW")
     try:
-        resp = scraper_get(url, timeout=60)
+        # TAB tarpits datacenter IPs (the 2026-08-11 first attempt came
+        # back non-JSON through the plain proxy) — go straight to
+        # residential (super) like the Racenet sweep's challenge path.
+        resp = scraper_get(url, timeout=75, super_=True, auto_super=False)
         if resp is None or resp.status_code != 200:
             return {"ok": False, "date": d.isoformat(),
-                    "error": f"HTTP {getattr(resp, 'status_code', '?')}"}
+                    "error": f"HTTP {getattr(resp, 'status_code', '?')}",
+                    "body": (getattr(resp, "text", "") or "")[:200]}
+        try:
+            payload = resp.json()
+        except Exception:
+            return {"ok": False, "date": d.isoformat(),
+                    "error": "non-JSON body",
+                    "body": (resp.text or "")[:200]}
         meetings = []
-        for m in (resp.json().get("meetings") or []):
+        for m in (payload.get("meetings") or []):
             if m.get("raceType") != "R":          # thoroughbred only
                 continue
             meetings.append({
