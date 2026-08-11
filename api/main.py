@@ -541,6 +541,45 @@ def sweep_racenet_odds(date_param: Optional[str] = Query(None, alias="date")):
             "pages": detail}
 
 
+@app.get("/tab-map")
+def tab_map(date_param: Optional[str] = Query(None, alias="date")):
+    """TAB meeting map for a date: meeting name -> venue mnemonic + race
+    numbers (thoroughbred only). Powers the engine's TAB bet buttons —
+    race URLs follow /racing/{date}/{MEETING}/{CODE}/R/{n} and only the
+    CODE can't be derived locally. TAB's info API tarpits datacenter
+    clients, so fetch it through the same Scrape.do stack as Racenet
+    (2026-08-11)."""
+    import json as _json
+    from datetime import date as _date, datetime as _dt
+    from zoneinfo import ZoneInfo
+    from .scraper_proxy import scraper_get
+    d = (_date.fromisoformat(date_param) if date_param
+         else _dt.now(ZoneInfo("Australia/Melbourne")).date())
+    url = (f"https://api.beta.tab.com.au/v1/tab-info-service/racing/"
+           f"dates/{d.isoformat()}/meetings?jurisdiction=NSW")
+    try:
+        resp = scraper_get(url, timeout=60)
+        if resp is None or resp.status_code != 200:
+            return {"ok": False, "date": d.isoformat(),
+                    "error": f"HTTP {getattr(resp, 'status_code', '?')}"}
+        meetings = []
+        for m in (resp.json().get("meetings") or []):
+            if m.get("raceType") != "R":          # thoroughbred only
+                continue
+            meetings.append({
+                "name": m.get("meetingName"),
+                "mnemonic": m.get("venueMnemonic"),
+                "location": m.get("location"),
+                "races": [r.get("raceNumber") for r in (m.get("races") or [])
+                          if r.get("raceNumber")],
+            })
+        return {"ok": True, "date": d.isoformat(), "count": len(meetings),
+                "meetings": meetings}
+    except Exception as e:
+        return {"ok": False, "date": d.isoformat(),
+                "error": f"{type(e).__name__}: {e}"}
+
+
 @app.get("/odds-latest")
 def odds_latest(date_param: Optional[str] = Query(None, alias="date"),
                 tick: Optional[str] = Query("last")):
