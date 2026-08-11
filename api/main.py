@@ -558,10 +558,15 @@ def tab_map(date_param: Optional[str] = Query(None, alias="date")):
     url = (f"https://api.beta.tab.com.au/v1/tab-info-service/racing/"
            f"dates/{d.isoformat()}/meetings?jurisdiction=NSW")
     try:
-        # TAB tarpits datacenter IPs (the 2026-08-11 first attempt came
-        # back non-JSON through the plain proxy) — go straight to
-        # residential (super) like the Racenet sweep's challenge path.
-        resp = scraper_get(url, timeout=75, super_=True, auto_super=False)
+        # TAB tarpits datacenter IPs AND geo-blocks non-AU exits (plain
+        # proxy: non-JSON; global residential: 502). Call Scrape.do
+        # directly with geoCode=au — scraper_get doesn't expose geo.
+        import requests as _rq
+        from .scraper_proxy import SCRAPER_API_KEY
+        resp = _rq.get("https://api.scrape.do",
+                       params={"token": SCRAPER_API_KEY, "url": url,
+                               "super": "true", "geoCode": "au"},
+                       timeout=90)
         if resp is None or resp.status_code != 200:
             return {"ok": False, "date": d.isoformat(),
                     "error": f"HTTP {getattr(resp, 'status_code', '?')}",
