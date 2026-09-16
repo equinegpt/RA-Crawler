@@ -541,6 +541,73 @@ def sweep_racenet_odds(date_param: Optional[str] = Query(None, alias="date")):
             "pages": detail}
 
 
+@app.get("/keen-flags")
+def keen_flags(
+    meeting_date: Optional[str] = Query(None, alias="date",
+                                        description="YYYY-MM-DD (default today)"),
+):
+    """Stewards Edge candidates (frozen rule, registered 2026-09-16).
+
+    A runner qualifies when its LAST start (<=60d back, non-trial):
+      - drew an over-racing stewards comment (pulled hard / over-raced /
+        raced keen / fierce),
+      - was beaten (position > 1) by less than 4 lengths,
+      - and the run BEFORE that had NO such comment (first-time keen only —
+        repeat offenders showed no edge).
+    Price gate ($1.50-5.00) is applied by the CONSUMER (curate) with live
+    prices — this endpoint returns candidates with the evidence quote.
+    Backtest (pfd_runs 2020-2026, mine/holdout): +2.2% / +13.9% at BSP.
+    """
+    d = meeting_date or date.today().isoformat()
+    eng = get_engine()
+    sql = """
+        WITH today AS (
+            SELECT DISTINCT ON (horse_id)
+                   signal_date, track, race_no, tab_no, horse_id, horse_name
+            FROM model_signals_daily
+            WHERE signal_date = :d AND horse_id IS NOT NULL
+            ORDER BY horse_id, track, race_no
+        ),
+        ranked AS (
+            SELECT t.track, t.race_no, t.tab_no, t.horse_id, t.horse_name,
+                   p.meeting_date AS prev_date, p.track_name AS prev_track,
+                   p.position AS prev_pos, p.margin AS prev_margin,
+                   p.stewards_report,
+                   (p.stewards_report ~* 'pulled hard|over-?raced|raced keen|fierce')
+                       AS keen,
+                   row_number() OVER (PARTITION BY t.horse_id
+                                      ORDER BY p.meeting_date DESC) AS rn
+            FROM today t
+            JOIN pfd_runs p
+              ON p.rdb_horse_id = t.horse_id
+             AND p.meeting_date <  CAST(:d AS date)
+             AND p.meeting_date >= CAST(:d AS date) - 90
+             AND NOT coalesce(p.is_barrier_trial, false)
+             AND p.position IS NOT NULL
+        )
+        SELECT l.track, l.race_no, l.tab_no, l.horse_id, l.horse_name,
+               l.prev_date, l.prev_track, l.prev_pos, l.prev_margin,
+               l.stewards_report,
+               (CAST(:d AS date) - l.prev_date) AS days_since,
+               coalesce(NOT p2.keen, true) AS first_time_keen
+        FROM ranked l
+        LEFT JOIN ranked p2 ON p2.horse_id = l.horse_id AND p2.rn = 2
+        WHERE l.rn = 1
+          AND l.keen
+          AND l.prev_pos > 1
+          AND l.prev_margin < 4
+          AND (CAST(:d AS date) - l.prev_date) <= 60
+          AND coalesce(NOT p2.keen, true)
+        ORDER BY l.track, l.race_no, l.tab_no
+    """
+    with eng.connect() as conn:
+        rows = [dict(r._mapping) for r in conn.execute(text(sql), {"d": d})]
+    for r in rows:
+        r["prev_date"] = str(r["prev_date"])
+        r["strong"] = bool(r["days_since"] > 14 or (r["prev_pos"] or 0) >= 4)
+    return {"date": d, "count": len(rows), "flags": rows}
+
+
 @app.get("/tab-map")
 def tab_map(date_param: Optional[str] = Query(None, alias="date")):
     """TAB meeting map for a date: meeting name -> venue mnemonic + race
