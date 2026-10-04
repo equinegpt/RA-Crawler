@@ -93,9 +93,25 @@ def discover_race_paths(meeting_date: date,
                         state: Optional[dict] = None) -> List[str]:
     """Race-page paths for the date from the form-guide index (Racenet's
     own hrefs — no slug guessing, which is what soft-404'd meeting URLs)."""
-    resp = _swept_get(INDEX, state if state is not None else {}, timeout=90)
+    st = state if state is not None else {}
+    # The form-guide index can throw a transient Kasada 202 that _swept_get's
+    # single residential escalation doesn't clear — it lifts within minutes
+    # (2026-10-05 sweep came back 0 rows on exactly this). Retry with backoff
+    # before giving up, so a brief challenge doesn't zero the whole sweep. If it
+    # persists, give up THIS run — the next scheduled sweep catches it once the
+    # challenge lifts, and curate's zero-price self-heal covers the morning.
+    resp = None
+    for attempt in range(6):
+        resp = _swept_get(INDEX, st, timeout=90)
+        if resp is not None and resp.status_code == 200:
+            break
+        code = getattr(resp, "status_code", "?")
+        print(f"[racenet-odds] index HTTP {code} (attempt {attempt + 1}/6) — "
+              f"front-door challenge, retrying in 45s", flush=True)
+        time.sleep(45)
     if resp is None or resp.status_code != 200:
-        raise RuntimeError(f"index -> HTTP {getattr(resp, 'status_code', '?')}")
+        raise RuntimeError(
+            f"index -> HTTP {getattr(resp, 'status_code', '?')} after 6 attempts")
     ymd = meeting_date.strftime("%Y%m%d")
     paths = sorted({m.group(0) for m in re.finditer(
         r"/form-guide/horse-racing/[a-z0-9\-]+-" + ymd +
