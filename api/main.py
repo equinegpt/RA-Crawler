@@ -532,11 +532,23 @@ def sweep_racenet_odds(date_param: Optional[str] = Query(None, alias="date")):
     # Structured error, never a bare 500: the 2026-08-01 Racenet anti-bot
     # blocks surfaced as "Internal Server Error" with zero diagnostics —
     # the Pi timer logs need to show WHAT failed.
+    from fastapi.responses import JSONResponse
     try:
         total = _sweep(d, detail=detail)
     except Exception as e:
-        return {"ok": False, "date": d.isoformat(), "runner_prices": 0,
-                "error": f"{type(e).__name__}: {e}", "pages": detail}
+        # 502, not 200: the caller (Pi odds_sweep.py, systemd OnFailure) must
+        # see a failed sweep as a failure. Body unchanged for diagnostics.
+        return JSONResponse(status_code=502, content={
+            "ok": False, "date": d.isoformat(), "runner_prices": 0,
+            "error": f"{type(e).__name__}: {e}", "pages": detail})
+    if total == 0 and len(detail) >= 5:
+        # 2026-10-17: "0 runner prices from 211 race pages" returned ok=True /
+        # HTTP 200 and three layers downstream called it a quiet day. A card
+        # of pages that yields nothing is a blocked sweep, not a success.
+        return JSONResponse(status_code=502, content={
+            "ok": False, "date": d.isoformat(), "runner_prices": 0,
+            "error": f"zero prices from {len(detail)} race pages (Racenet challenge)",
+            "pages": detail})
     return {"ok": True, "date": d.isoformat(), "runner_prices": total,
             "pages": detail}
 
